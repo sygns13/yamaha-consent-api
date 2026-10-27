@@ -33,3 +33,7 @@ class KizunaNotification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Reclamo del envío: una sola instancia envía cada notificación. Se marca al reclamarla (SELECT ... FOR UPDATE
+    # SKIP LOCKED) y se renueva en cada intento. Si pasan KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES sin renovarse (la
+    # instancia se reinició a mitad de los reintentos), el reproceso al arrancar la vuelve a reclamar.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

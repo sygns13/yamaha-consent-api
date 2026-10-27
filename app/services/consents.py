@@ -12,7 +12,8 @@ pueda consultarlo y reciba una respuesta final por cada ID.
 import enum
 import hashlib
 import logging
-from dataclasses import dataclass, replace
+import uuid
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
@@ -31,6 +32,7 @@ from app.models import (
     WhatsappStatus,
 )
 from app.schemas.consent import ConsentCreateRequest
+from app.services.kizuna_notifications import enqueue_notifications
 from app.utils.tokens import generate_link_token
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,9 @@ class RegistrationOutcome:
     whatsapp: WhatsappMessage | None = None
     # Solo en RN-04 con un ID nuevo: el registro creado para ese ID, vinculado a `consent`.
     linked_copy: Consent | None = None
+    # Notificaciones a KIZUNA creadas en la transacción (copia que nace con respuesta): se disparan después del
+    # commit.
+    notification_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 class TransactionAlreadyRejectedError(Exception):
@@ -118,7 +123,12 @@ async def register_consent(
         if active is not None:
             outcome = _update_customer_data(session, active, request)
             copy = await _create_linked_copy(session, active, request)
-            return replace(outcome, linked_copy=copy)
+            # Copia que nace con respuesta (principal ya ACEPTADO): KIZUNA recibe también la respuesta final de este
+            # ID, aunque el cliente no vuelva a responder (M5).
+            notification_ids = []
+            if copy.status != ConsentStatus.PENDIENTE:
+                notification_ids = await enqueue_notifications(session, [copy], settings=settings)
+            return replace(outcome, linked_copy=copy, notification_ids=notification_ids)
 
         # Paso 5: no hay registro activo (nunca existió, RN-03 con otro Dealer, o RN-05 tras un rechazo).
         return await _create(session, request, sender=sender, settings=settings)
@@ -167,8 +177,6 @@ async def _create_linked_copy(
     respuesta; si está PENDIENTE, la copia también, y recibirá la respuesta cuando el cliente conteste en el
     principal (M4).
     """
-    # TODO(M5): si la copia nace con respuesta (principal ACEPTADO), crear su notificación en kizuna_notifications
-    # en esta misma transacción y enviarla después del commit (decisión del 27/10/2026, ver spec M5).
     copy = Consent(
         transaction_id=request.transaction_id,
         source_transaction_id=primary.transaction_id,

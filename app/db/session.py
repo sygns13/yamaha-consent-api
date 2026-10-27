@@ -13,3 +13,8 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:
         yield session
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Para el trabajo que sigue después de la respuesta (BackgroundTasks): abre sus propias sesiones."""
+    return SessionLocal

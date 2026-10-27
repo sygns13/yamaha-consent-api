@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,12 +21,14 @@ from app.schemas import (
 )
 from app.services.consent_queries import get_consent, list_consents
 from app.services.consents import RegistrationResult, TransactionAlreadyRejectedError, register_consent
+from app.services.kizuna_notifications import KizunaNotifier, get_kizuna_notifier
 
 router = APIRouter(prefix="/api/v1", tags=["kizuna"], dependencies=[ApiKeyDep])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SenderDep = Annotated[WhatsAppSender, Depends(get_whatsapp_sender)]
+NotifierDep = Annotated[KizunaNotifier, Depends(get_kizuna_notifier)]
 
 REJECTED_DETAIL = "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato"
 NOT_FOUND_DETAIL = "No existe un registro con ese ID de transacción"
@@ -56,9 +58,11 @@ class NotFoundResponse(BaseModel):
 async def create_consent(
     body: ConsentCreateRequest,
     response: Response,
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     settings: SettingsDep,
     sender: SenderDep,
+    notifier: NotifierDep,
 ) -> ConsentCreateResponse | JSONResponse:
     try:
         outcome = await register_consent(session, body, sender=sender, settings=settings)
@@ -73,6 +77,9 @@ async def create_consent(
 
     if outcome.result is RegistrationResult.UPDATED:
         response.status_code = status.HTTP_200_OK
+    if outcome.notification_ids:
+        # Copia vinculada que nació con respuesta: se notifica a KIZUNA después del commit (M5).
+        background_tasks.add_task(notifier.dispatch, outcome.notification_ids)
 
     whatsapp = None
     if outcome.whatsapp is not None:

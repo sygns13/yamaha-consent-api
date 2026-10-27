@@ -296,6 +296,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | `last_http_status` | int null | |
 | `last_error` | text null | |
 | `last_attempt_at` / `sent_at` | timestamptz null | |
+| `claimed_at` | timestamptz null | Reclamo del envío (M5): se marca al reclamar la notificación (`SELECT ... FOR UPDATE SKIP LOCKED`) y se renueva en cada intento. Nulo = sin reclamar (migración `94fef8d63ecf`) |
 
 ### Criterios de aceptación M1
 
@@ -542,7 +543,7 @@ Busca por `sha256(token)`.
 6. `responded_at = now()` y `consent_links.used_at = now()`.
 7. **Copias vinculadas (RN-04):** con la fila del principal bloqueada, copiar la respuesta a sus copias vinculadas que sigan `PENDIENTE` con `apply_response_to_linked_copies()` (`app/services/linked_copies.py`, ya implementada en M2). En `ACEPTADO` se copian el estado, los tres checks y `responded_at`; en `NO_ACEPTADO` se aplica RN-01 a cada copia (`is_deleted = 1`, `deleted_at`, `full_name = null`, marketing en `null`; se conservan documento, Dealer, teléfono y transacción).
 8. Crear en `kizuna_notifications` (`PENDIENTE`) **un registro por el principal y uno por cada copia vinculada actualizada en el paso 7**, y disparar los envíos (M5) **después del commit**.
-   - Implementado en `app/services/kizuna_notifications.py`: `enqueue_notifications()` crea las filas con el payload de `build_kizuna_payload()` (`app/integrations/kizuna_client.py`) y `target_url = KIZUNA_CALLBACK_URL`. El router dispara `dispatch_notifications()` como `BackgroundTask`. Hasta M5 ese disparo solo registra en el log (`TODO(M5)`) y la notificación queda `PENDIENTE`.
+   - Implementado en `app/services/kizuna_notifications.py`: `enqueue_notifications()` crea las filas con el payload de `build_kizuna_payload()` (`app/integrations/kizuna_client.py`) y `target_url = KIZUNA_CALLBACK_URL`. El router dispara `KizunaNotifier.dispatch()` como `BackgroundTask` (envío y reintentos: M5).
 9. Responder `200 {"status":"ACEPTADO"|"NO_ACEPTADO"}`. La landing redirige a `/gracias` en ambos casos.
 
 ### Criterios de aceptación M4
@@ -558,14 +559,27 @@ Busca por `sha256(token)`.
 
 - Tras el envío del cliente (M4), el backend hace `POST` a `KIZUNA_CALLBACK_URL` con la respuesta final.
 - **Una petición por cada ID de transacción:** si el registro tiene copias vinculadas (RN-04), se envía una respuesta para el principal y otra por cada copia, cada una con su propio `transaction_id` y su propia fila en `kizuna_notifications` (reintentos independientes).
-- **Copia que nace ya con respuesta** (el principal estaba `ACEPTADO` cuando llegó el ID nuevo, M2 paso 4): **también se le envía su respuesta final a KIZUNA**, aunque el cliente no vuelva a responder, para que KIZUNA reciba la respuesta de cada ID. En M5, `POST /api/v1/consents` crea esa notificación en `kizuna_notifications` (`PENDIENTE`) en la misma transacción en que crea la copia, y dispara el envío **después del commit**. Hoy queda un `TODO(M5)` en `app/services/consents.py`.
+- **Copia que nace ya con respuesta** (el principal estaba `ACEPTADO` cuando llegó el ID nuevo, M2 paso 4): **también se le envía su respuesta final a KIZUNA**, aunque el cliente no vuelva a responder, para que KIZUNA reciba la respuesta de cada ID. En M5, `POST /api/v1/consents` crea esa notificación en `kizuna_notifications` (`PENDIENTE`) en la misma transacción en que crea la copia, y dispara el envío **después del commit**. Una copia que nace `PENDIENTE` no se notifica al crearse (se notifica cuando el cliente responde, M4 pasos 7 y 8), ni tampoco el reenvío del mismo `transaction_id` (M2 paso 2).
+- Implementado en `app/integrations/kizuna_client.py` (`build_kizuna_payload()`, `KizunaClient`: un intento) y `app/services/kizuna_notifications.py` (`KizunaNotifier`: outbox, reclamo, reintentos y reproceso).
 - **Interruptor:** `KIZUNA_CALLBACK_ENABLED=true|false`. Con `false`, **no se dispara ninguna petición**: la notificación se guarda en `kizuna_notifications` con estado `PENDIENTE` y se registra en el log que el envío está desactivado. Por defecto en `.env.example`: `false`.
 - **Mientras no exista el endpoint real de KIZUNA**, el envío apunta a un **mock** (ver más abajo). Pasar al endpoint real debe requerir **cambios mínimos**: la URL y la autenticación por variables de entorno, y los campos en **una sola función** de mapeo (`build_kizuna_payload()` en `integrations/kizuna_client.py`).
 - **Reintentos:** 1 intento inicial + **hasta 3 reintentos** (`KIZUNA_CALLBACK_MAX_RETRIES=3`), con espera configurable entre intentos (`KIZUNA_CALLBACK_BACKOFF_SECONDS`, por ejemplo `5,30,120`) y timeout por intento (`KIZUNA_CALLBACK_TIMEOUT_SECONDS`).
-- Se reintenta ante error de red, timeout o respuesta `5xx`/`429`. Ante otros `4xx` se marca `FALLIDO` sin reintentar **(propuesta)**.
-- Cada intento actualiza `kizuna_notifications` (`attempts`, `last_http_status`, `last_error`). Si se agotan los reintentos → `FALLIDO` y log `ERROR`. El endpoint de consulta (M2) sigue siendo la vía de respaldo.
+  - La espera `KIZUNA_CALLBACK_BACKOFF_SECONDS[i]` va antes del reintento `i+1`. Si hay más reintentos que valores, se repite el último; sin valores, no hay espera. El header `Retry-After` de un `429` no se usa.
+  - `KIZUNA_CALLBACK_TIMEOUT_SECONDS` limita el **intento completo** (no solo cada etapa de la conexión).
+- Se reintenta ante error de red, timeout o respuesta `5xx`/`429`. Ante otros `4xx` se marca `FALLIDO` sin reintentar **(propuesta)**. Éxito = cualquier `2xx`. Un `3xx` no se sigue y se marca `FALLIDO` sin reintentar.
+- Cada intento actualiza `kizuna_notifications` (`attempts`, `last_http_status`, `last_error`, `last_attempt_at`) con su propio commit: durante el envío y la espera entre intentos no queda ninguna transacción abierta. Si se agotan los reintentos → `FALLIDO` y log `ERROR`. El endpoint de consulta (M2) sigue siendo la vía de respaldo.
+  - `last_error`: `HTTP <código>: <cuerpo>` (cuerpo truncado a 500 caracteres; puede traer el documento, por eso **no** va al log) o el tipo de error de red o timeout. En un envío exitoso queda en `null`.
+  - En el log solo van el `transaction_id`, el ID de la notificación, el intento y el código HTTP: nunca el payload ni el valor de autenticación.
+- La notificación guarda su `payload` y su `target_url` al crearse: se envía eso aunque después cambie la variable de entorno.
+- Las notificaciones de un mismo envío (el principal y sus copias) se envían **en paralelo**: los reintentos de una no retrasan a las demás.
 - Ejecución: `BackgroundTasks` de FastAPI después del commit. En Cloud Run se requiere **CPU siempre asignada** (M7) para que la tarea no se congele. *(Alternativa si se requiere más robustez: Cloud Tasks.)*
-- Al arrancar la app, las notificaciones `PENDIENTE` con más de N minutos sin intento se reprocesan **(propuesta)**.
+- **Reclamo (una sola instancia envía cada notificación):** antes de enviar, la notificación se reclama con `SELECT ... FOR UPDATE SKIP LOCKED` en una transacción corta, que marca `kizuna_notifications.claimed_at`. El reclamo se renueva en cada intento. Una notificación reclamada por otra instancia (con el reclamo vigente) no se envía. Con `KIZUNA_CALLBACK_ENABLED=false` no se reclama.
+- **Reproceso al arrancar** (decisión del 27/10/2026): si `KIZUNA_CALLBACK_ENABLED=true`, al arrancar la app se reclaman y envían en segundo plano (sin retrasar el arranque; de la más antigua a la más reciente, hasta 10 a la vez) todas las notificaciones `PENDIENTE`:
+  - **sin reclamar**: todas, antiguas y recientes, incluidas las acumuladas mientras el envío estaba apagado;
+  - con el **reclamo vencido**: más de `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` (por defecto 10) sin intento, porque la instancia que las enviaba se reinició. Conservan sus intentos anteriores.
+  - Al apagar la app, el reproceso en curso se cancela; lo que quede conserva su reclamo y se retoma cuando venza.
+  - `FALLIDO` y `ENVIADO` no se reprocesan.
+- **Arranque:** con `KIZUNA_CALLBACK_ENABLED=false` → log `WARNING`. Con `true` y sin `KIZUNA_CALLBACK_URL`, o con `KIZUNA_CALLBACK_AUTH_HEADER` sin `KIZUNA_CALLBACK_AUTH_VALUE` → **la aplicación no arranca** (`KizunaConfigurationError`). Si `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` no supera la espera más larga entre intentos más el timeout → log `WARNING` (otra instancia podría reclamar una notificación a mitad de sus reintentos y KIZUNA la recibiría dos veces).
 
 ### Contrato del callback — ⚠️ PENDIENTE-13 (lo define Yamaha/KIZUNA)
 
@@ -741,7 +755,8 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | `KIZUNA_CALLBACK_AUTH_VALUE` | *(secreto)* | |
 | `KIZUNA_CALLBACK_MAX_RETRIES` | `3` | Reintentos después del primer intento |
 | `KIZUNA_CALLBACK_BACKOFF_SECONDS` | `5,30,120` | Espera antes de cada reintento |
-| `KIZUNA_CALLBACK_TIMEOUT_SECONDS` | `10` | |
+| `KIZUNA_CALLBACK_TIMEOUT_SECONDS` | `10` | Límite de cada intento completo |
+| `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` | `10` | Al arrancar se reenvían las notificaciones `PENDIENTE` sin reclamar y las que llevan más de N minutos sin intento (reclamo vencido) |
 
 ### Frontend (build)
 
@@ -834,3 +849,12 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | M4 · IP de la evidencia | Se mantiene la **primera** IP de `X-Forwarded-For` (la nube de despliegue aún podría cambiar). Sin el header, la IP de la conexión; IP inválida → `null`. |
 | 27/10/2026 | M4 · Política de privacidad sin configurar | `GET` devuelve `privacy_policy_url: null` y la evidencia guarda `""` (PENDIENTE-14). |
 | 27/10/2026 | M4 · Notificación a KIZUNA | M4 crea las filas `PENDIENTE` (payload de `build_kizuna_payload()`) y dispara `dispatch_notifications()` después del commit; el envío HTTP es M5. |
+| 27/10/2026 | M5 · Esperas entre reintentos | Si hay más reintentos que valores en `KIZUNA_CALLBACK_BACKOFF_SECONDS` se repite el último; sin valores, no hay espera. `Retry-After` no se usa. |
+| 27/10/2026 | M5 · Timeout | `KIZUNA_CALLBACK_TIMEOUT_SECONDS` limita el intento completo. |
+| 27/10/2026 | M5 · Respuestas 3xx | No se siguen; `FALLIDO` sin reintentar. |
+| 27/10/2026 | M5 · `last_error` | Guarda el cuerpo de la respuesta truncado a 500 caracteres (no va al log); `null` tras un envío exitoso. |
+| 27/10/2026 | M5 · Configuración al arrancar | Con `KIZUNA_CALLBACK_ENABLED=true` y sin URL, o con el header de autenticación sin su valor, la aplicación no arranca (`KizunaConfigurationError`). Apagado → `WARNING`. |
+| 27/10/2026 | M5 · Payload y URL | Se fijan al crear la notificación. Las notificaciones de un mismo envío se envían en paralelo. |
+| 27/10/2026 | M5 · Reproceso al arrancar | Nueva variable `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` (10). Al arrancar con el envío encendido se envían **todas** las `PENDIENTE` sin reclamar (antiguas y recientes, también las acumuladas con el envío apagado) y las de reclamo vencido. |
+| 27/10/2026 | M5 · Reclamo con SKIP LOCKED | Cada notificación se reclama con `SELECT ... FOR UPDATE SKIP LOCKED` (`kizuna_notifications.claimed_at`, migración `94fef8d63ecf`) para que dos instancias no la envíen dos veces. |
+| 27/10/2026 | M5 · `transaction_id` en RN-04 | Se mantiene la regla del 27/10 ("RN-04 con un ID de transacción nuevo"): cada ID (principal y copias) se notifica con **su propio** `transaction_id`. |

@@ -22,7 +22,7 @@ from app.models import (
     WhatsappMessage,
 )
 from app.utils.tokens import hash_token
-from tests.conftest import RecordingWhatsAppSender
+from tests.conftest import RecordingNotifier, RecordingWhatsAppSender
 from tests.db_helpers import Sessions, all_rows, count, get_consent
 
 CONSENTS_URL = "/api/v1/consents"
@@ -57,15 +57,9 @@ def policy_settings(test_settings: Settings) -> None:
 
 
 @pytest.fixture
-def dispatched(monkeypatch: pytest.MonkeyPatch) -> list[list[uuid.UUID]]:
-    """Registra cada disparo de notificaciones (el envío real es M5)."""
-    calls: list[list[uuid.UUID]] = []
-
-    async def fake_dispatch(notification_ids: list[uuid.UUID]) -> None:
-        calls.append(list(notification_ids))
-
-    monkeypatch.setattr("app.api.v1.public.dispatch_notifications", fake_dispatch)
-    return calls
+def dispatched(recording_notifier: RecordingNotifier) -> list[list[uuid.UUID]]:
+    """Cada disparo de notificaciones a KIZUNA (el envío se prueba en test_kizuna_notifications.py)."""
+    return recording_notifier.calls
 
 
 @pytest.fixture
@@ -547,7 +541,10 @@ async def test_rejection_notification_has_marketing_null(
 
 
 async def test_dispatch_runs_after_the_commit(
-    public_client: httpx.AsyncClient, token: str, session_factory: Sessions, monkeypatch: pytest.MonkeyPatch
+    public_client: httpx.AsyncClient,
+    token: str,
+    session_factory: Sessions,
+    recording_notifier: RecordingNotifier,
 ) -> None:
     seen: list[NotificationStatus] = []
 
@@ -556,15 +553,16 @@ async def test_dispatch_runs_after_the_commit(
         async with session_factory() as session:
             seen.extend([(await session.get(KizunaNotification, nid)).status for nid in notification_ids])
 
-    monkeypatch.setattr("app.api.v1.public.dispatch_notifications", check_committed)
+    recording_notifier.on_dispatch = check_committed
     await submit(public_client, token, ACCEPT_ALL)
     assert seen == [NotificationStatus.PENDIENTE]
 
 
-async def test_default_dispatch_sends_nothing_yet(
-    public_client: httpx.AsyncClient, token: str, session_factory: Sessions
+async def test_callback_disabled_leaves_the_notification_pending(
+    public_client: httpx.AsyncClient, token: str, session_factory: Sessions, test_settings: Settings
 ) -> None:
-    # Sin el reemplazo de prueba: el disparo real (TODO(M5)) no hace nada y la notificación queda PENDIENTE.
+    # Notificador real con KIZUNA_CALLBACK_ENABLED=false: no sale ninguna petición y queda PENDIENTE.
+    assert test_settings.kizuna_callback_enabled is False
     assert (await submit(public_client, token, ACCEPT_ALL)).status_code == 200
     (notification,) = await all_rows(session_factory, KizunaNotification)
     assert (notification.status, notification.attempts) == (NotificationStatus.PENDIENTE, 0)

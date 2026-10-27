@@ -129,8 +129,8 @@ class ConsentCreateResponse(BaseModel):
     # ID recibido en la solicitud.
     transaction_id: str
     result: Literal["CREATED", "UPDATED"]
-    # Registro creado o actualizado. En RN-04 con un ID nuevo es el ID del registro activo previo: la respuesta
-    # final a KIZUNA (M5) se envía con este ID.
+    # Registro creado o actualizado. En RN-04 con un ID nuevo es el ID del registro principal activo (el ID recibido
+    # queda como copia vinculada y KIZUNA recibe su propia respuesta final con ese ID, M5).
     affected_transaction_id: str
     status: ConsentStatus
     # null cuando result es UPDATED (no se reenvía el WhatsApp).

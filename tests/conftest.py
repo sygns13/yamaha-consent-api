@@ -6,7 +6,8 @@ tests que usan estas fixtures se saltan.
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,33 @@ def whatsapp_sender() -> RecordingWhatsAppSender:
     return RecordingWhatsAppSender()
 
 
+class RecordingNotifier:
+    """Reemplaza a KizunaNotifier: registra cada disparo y, opcionalmente, ejecuta `on_dispatch`."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[uuid.UUID]] = []
+        self.on_dispatch: Callable[[Sequence[uuid.UUID]], Awaitable[None]] | None = None
+
+    async def dispatch(self, notification_ids: Sequence[uuid.UUID]) -> None:
+        self.calls.append(list(notification_ids))
+        if self.on_dispatch is not None:
+            await self.on_dispatch(notification_ids)
+
+
+@pytest.fixture
+def recording_notifier(api_client: httpx.AsyncClient) -> Iterator[RecordingNotifier]:
+    """Los disparos a KIZUNA no se envían: quedan registrados en `calls`."""
+    from app.main import app
+    from app.services.kizuna_notifications import get_kizuna_notifier
+
+    notifier = RecordingNotifier()
+    app.dependency_overrides[get_kizuna_notifier] = lambda: notifier
+    try:
+        yield notifier
+    finally:
+        app.dependency_overrides.pop(get_kizuna_notifier, None)
+
+
 @pytest.fixture
 async def api_client(
     session_factory: async_sessionmaker[AsyncSession],
@@ -119,7 +147,7 @@ async def api_client(
 
     Cada petición usa su propia sesión (y conexión): las peticiones concurrentes son concurrentes en la base.
     """
-    from app.db.session import get_session
+    from app.db.session import get_session, get_session_factory
     from app.main import app
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -128,6 +156,7 @@ async def api_client(
 
     overrides: dict[Callable[..., Any], Callable[..., Any]] = {
         get_session: override_session,
+        get_session_factory: lambda: session_factory,
         get_settings: lambda: test_settings,
         get_whatsapp_sender: lambda: whatsapp_sender,
     }

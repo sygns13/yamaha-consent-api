@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     kizuna_callback_max_retries: int = Field(default=3, ge=0)
     kizuna_callback_backoff_seconds: Annotated[list[float], NoDecode] = [5, 30, 120]
     kizuna_callback_timeout_seconds: float = Field(default=10, gt=0)
+    # Al arrancar se reenvían las notificaciones PENDIENTE sin reclamar o con el reclamo vencido (más de N minutos
+    # sin intento).
+    kizuna_callback_reprocess_after_minutes: float = Field(default=10, gt=0)
 
     @field_validator("log_level", mode="before")
     @classmethod

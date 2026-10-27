@@ -23,13 +23,14 @@ from app.services.consent_links import (
     get_link_status,
     submit_consent,
 )
-from app.services.kizuna_notifications import dispatch_notifications
+from app.services.kizuna_notifications import KizunaNotifier, get_kizuna_notifier
 from app.utils.client_ip import client_ip
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+NotifierDep = Annotated[KizunaNotifier, Depends(get_kizuna_notifier)]
 
 LINK_NOT_FOUND = "El enlace no existe"
 LINK_GONE = {
@@ -75,6 +76,7 @@ async def submit_consent_link(
     background_tasks: BackgroundTasks,
     session: SessionDep,
     settings: SettingsDep,
+    notifier: NotifierDep,
 ) -> ConsentSubmitResponse | JSONResponse:
     """Con `personal_data` en false se registra el rechazo (RN-01): no es un error, responde 200 NO_ACEPTADO."""
     evidence = SubmissionEvidence(
@@ -91,6 +93,7 @@ async def submit_consent_link(
         gone = LinkGoneResponse(detail=LINK_GONE[exc.link_status], link_status=exc.link_status.value)
         return JSONResponse(status_code=status.HTTP_410_GONE, content=gone.model_dump())
 
-    # Paso 8: después del commit (submit_consent ya terminó su transacción) y después de responder.
-    background_tasks.add_task(dispatch_notifications, outcome.notification_ids)
+    # Paso 8 (M5): una respuesta a KIZUNA por cada ID de transacción, después del commit (submit_consent ya terminó
+    # su transacción) y después de responder al cliente.
+    background_tasks.add_task(notifier.dispatch, outcome.notification_ids)
     return ConsentSubmitResponse(status=outcome.status.value)
