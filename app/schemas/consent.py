@@ -1,6 +1,6 @@
 """Schemas de entrada de la API para KIZUNA (M2). Normalizan y validan según la sección 2.2."""
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -13,7 +13,7 @@ from pydantic import (
 from pydantic_core.core_schema import ValidationInfo
 
 from app.core.config import get_settings
-from app.models.enums import DocumentType
+from app.models.enums import ConsentStatus, DocumentType, WhatsappStatus
 from app.utils.normalization import (
     normalize_dealer,
     normalize_document_number,
@@ -100,6 +100,48 @@ class ConsentCreateRequest(BaseModel):
     additional_info: dict[str, Any] | None = None
 
     _document_number = field_validator("document_number")(_clean_document_number)
+
+
+class WhatsAppSendStatus(BaseModel):
+    status: WhatsappStatus
+    error_code: str | None
+
+
+class ConsentCreateResponse(BaseModel):
+    """Respuesta de POST /api/v1/consents (201 CREATED o 200 UPDATED). No incluye datos personales."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "transaction_id": "TRX-000123",
+                    "result": "CREATED",
+                    "affected_transaction_id": "TRX-000123",
+                    "status": "PENDIENTE",
+                    "whatsapp": {"status": "queued", "error_code": None},
+                }
+            ]
+        }
+    )
+
+    # ID recibido en la solicitud.
+    transaction_id: str
+    result: Literal["CREATED", "UPDATED"]
+    # Registro creado o actualizado. En RN-04 con un ID nuevo es el ID del registro activo previo: la respuesta
+    # final a KIZUNA (M5) se envía con este ID.
+    affected_transaction_id: str
+    status: ConsentStatus
+    # null cuando result es UPDATED (no se reenvía el WhatsApp).
+    whatsapp: WhatsAppSendStatus | None
+
+
+class ConsentConflictResponse(BaseModel):
+    """409: el transaction_id ya existe y está borrado lógicamente (NO_ACEPTADO). No se modifica nada."""
+
+    detail: str
+    transaction_id: str
+    status: ConsentStatus
+    is_deleted: int
 
 
 class ConsentListQuery(BaseModel):

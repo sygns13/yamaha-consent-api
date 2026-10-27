@@ -13,7 +13,8 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+# Los tests lo desactivan (configure_logger=False): fileConfig deshabilita los loggers ya creados de la app.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 # add your model's MetaData object here
@@ -23,7 +24,10 @@ from app.core.config import get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 import app.models  # noqa: E402,F401  (registra los modelos en Base.metadata)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Los tests pasan la URL de la base de pruebas en config.attributes["database_url"].
+# "%" se duplica porque alembic.ini usa interpolación de configparser (p. ej. una contraseña con %).
+database_url = config.attributes.get("database_url") or get_settings().database_url
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

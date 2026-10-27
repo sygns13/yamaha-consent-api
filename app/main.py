@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.v1 import health
+from app.api.v1 import health, kizuna
 from app.core.config import get_settings
+from app.core.http_errors import http_exception_handler, unhandled_exception_handler
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
 from app.core.security import add_cors, check_security_settings
@@ -25,6 +27,11 @@ app = FastAPI(
 # preflight (OPTIONS).
 add_cors(app, settings)
 app.add_middleware(RequestIdMiddleware)
+
+# Todas las respuestas de error en español y en JSON.
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 app.include_router(health.router)
+app.include_router(kizuna.router)

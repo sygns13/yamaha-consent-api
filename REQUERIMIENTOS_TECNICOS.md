@@ -330,6 +330,18 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 Un error de validación responde `422` con el detalle del campo: `{"detail": [{"type": "...", "loc": ["body", "phone"], "msg": "..."}]}`. Los mensajes (`msg`) están **en español**, incluidos los que genera Pydantic. La respuesta **no** devuelve el valor recibido (`input`), porque puede ser un dato personal.
 
+**Otros errores HTTP**, también en español y en JSON (`{"detail": "..."}`). Se traducen los textos que generan FastAPI y Starlette; los mensajes propios en español pasan sin cambios:
+
+| Caso | Respuesta |
+|---|---|
+| Ruta inexistente | `404 {"detail": "Recurso no encontrado"}` |
+| Método no permitido | `405 {"detail": "Método no permitido"}` (se conserva el header `Allow`) |
+| Cuerpo ilegible (p. ej. no está en UTF-8) | `400 {"detail": "No se pudo leer el cuerpo de la petición: debe ser JSON en UTF-8"}`. FastAPI lee el cuerpo antes de validar la API Key, así que este error puede llegar antes que un `401` |
+| Error no controlado | `500 {"detail": "Error interno del servidor"}`, sin detalles internos (antes era texto plano en inglés) |
+| Otro código sin detalle propio | Mensaje genérico en español según el código (por ejemplo `503 "Servicio no disponible"`) |
+
+- El engine de SQLAlchemy usa `hide_parameters=True`: los errores de base de datos (por ejemplo un `IntegrityError` en el traceback de un `500`) no incluyen los parámetros del SQL, que traen datos personales.
+
 ### 2.3 `POST /api/v1/consents` — recepción desde KIZUNA (requiere API Key)
 
 **Request**
@@ -346,13 +358,26 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 ```
 
 **Lógica** (en una transacción, bloqueando por documento + Dealer para evitar duplicados concurrentes)
+
+- **Bloqueo:** *advisory locks* de PostgreSQL (`pg_advisory_xact_lock`), que se liberan al terminar la transacción: uno por `transaction_id` y otro por documento + Dealer, siempre en ese orden para evitar *deadlocks*. Un `SELECT ... FOR UPDATE` no alcanza, porque en el caso `CREATED` todavía no existe la fila que habría que bloquear. El índice único parcial de M1 queda como red de seguridad.
+- La lógica vive en `app/services/consents.py`; el router solo traduce el resultado a la respuesta HTTP.
+
 1. Validar y normalizar.
 2. **El `transaction_id` ya existe** (reenvío de la misma transacción) → **RN-04**: actualizar `full_name`, `phone` y `additional_info`, y registrar `consent_requests` (`UPDATED`). Sin enlace ni WhatsApp nuevos. Responder `200`.
-   - Si ese registro tiene `is_deleted = 1` → responder `409` con el estado actual, sin modificar nada **(propuesta)**.
+   - Si ese registro tiene `is_deleted = 1` → responder `409` con el estado actual, sin modificar nada **(propuesta)**. Cuerpo: `{"detail": "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato", "transaction_id": "...", "status": "NO_ACEPTADO", "is_deleted": 1}`.
+   - Si el reenvío trae **otro documento u otro Dealer**, se conservan los del registro: solo se actualizan nombre, teléfono e información adicional, y se registra un log `WARNING`.
 3. Buscar el **registro activo** del documento + Dealer (`is_deleted = 0`, el más reciente).
 4. **Hay registro activo** (pendiente o aceptado) → **RN-04**: actualizar los datos del cliente en ese registro y registrar `consent_requests` (`UPDATED`, con el nuevo `transaction_id` y la referencia al registro afectado). **No** se crea registro, **no** se reenvía WhatsApp y **no** se tocan las conformidades. Responder `200`. El nuevo ID de transacción **no** se convierte en registro: la respuesta final a KIZUNA (M5) se envía con el **ID de transacción del registro existente (anterior)**, que se devuelve en `affected_transaction_id`.
 5. **No hay registro activo** (nunca existió, o solo hay registros con `is_deleted = 1` → **RN-05**) → crear `consents` con el `transaction_id` recibido (`PENDIENTE`, `is_deleted = 0`), registrar `consent_requests` (`CREATED`), crear `consent_links` con token nuevo y **enviar el WhatsApp (M3)**. Responder `201`.
-6. Si falla el envío por Twilio, el registro **se conserva**, el error queda en `whatsapp_messages` y la respuesta lo indica (no es un error 5xx).
+6. Si falla el envío por Twilio, el registro **se conserva**, el error queda en `whatsapp_messages` y la respuesta lo indica (no es un error 5xx). Una excepción inesperada del envío también se registra como `failed` (en el log solo va el tipo de error, porque el mensaje podría incluir el teléfono).
+
+**Detalles de implementación**
+
+- **`additional_info` en una actualización (RN-04):** si la solicitud **no** incluye el campo, se conserva el valor anterior; si lo incluye (aunque sea `null`), se reemplaza.
+- **El WhatsApp se envía dentro de la transacción**, antes del commit. Si el commit fallara después del envío, KIZUNA reintenta y se crea un enlace nuevo. Separar el envío en otra transacción sería peor: con RN-04, un reintento ya no reenviaría el WhatsApp y el cliente nunca recibiría el enlace.
+- **Token del enlace:** `secrets.token_urlsafe(32)`; en `consent_links` solo se guarda el SHA-256 (`token_hash`) y `expires_at = created_at + LINK_TTL_HOURS`. El token en claro nunca se guarda ni se registra en logs.
+- **Teléfono para el envío:** `whatsapp:+{PHONE_COUNTRY_PREFIX}{phone}`. Se guarda en `whatsapp_messages.to_phone` junto con `TWILIO_CONTENT_SID`.
+- **Envío desacoplado:** el servicio usa la interfaz `WhatsAppSender` (`app/integrations/whatsapp.py`). Hasta M3 la implementación es `FakeWhatsAppSender`, que no envía nada: solo registra en el log (teléfono enmascarado, sin token) y responde `queued`.
 
 **Response**
 ```json
@@ -726,4 +751,10 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | API Key sin configurar | Con `API_KEY_ENABLED=true` y `API_KEY` vacía, la aplicación **no arranca** (excepción al iniciar) y el despliegue falla. |
 | 27/10/2026 | Respuestas 401 | Mensajes distintos: `"Falta la API Key"` (sin header) y `"API Key inválida"` (clave incorrecta). |
 | 27/10/2026 | Comparación de la API Key | Exacta: no se recortan espacios ni se ignoran mayúsculas. |
+| 27/10/2026 | Bloqueo en `POST /consents` | *Advisory locks* de PostgreSQL por `transaction_id` y por documento + Dealer (un bloqueo de fila no cubre el caso en que el registro aún no existe). |
+| 27/10/2026 | `additional_info` en RN-04 | Si no se envía, se conserva el valor anterior; si se envía (incluso `null`), se reemplaza. |
+| 27/10/2026 | Reenvío con otro documento o Dealer | Se conservan el documento y el Dealer del registro; solo se actualizan los datos del cliente y se registra un `WARNING`. |
+| 27/10/2026 | Respuesta `409` | `{"detail", "transaction_id", "status", "is_deleted"}`. |
+| 27/10/2026 | WhatsApp dentro de la transacción | El envío ocurre antes del commit, para que un reintento de KIZUNA tras un fallo genere un enlace nuevo. |
+| 27/10/2026 | Errores HTTP en español | 400 (cuerpo ilegible), 404, 405, 500 y demás errores del framework se devuelven en español y en JSON; el 500 sin detalles internos. Los errores de SQL no incluyen parámetros. |
 | 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |
