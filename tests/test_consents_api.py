@@ -5,13 +5,11 @@ Corre contra la base de pruebas (ver conftest.py) con un WhatsAppSender de prueb
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.integrations.whatsapp import WhatsAppSendResult
@@ -25,6 +23,7 @@ from app.models import (
 )
 from app.utils.tokens import hash_token
 from tests.conftest import RecordingWhatsAppSender
+from tests.db_helpers import Sessions, accept, all_rows, count, get_consent, reject
 
 URL = "/api/v1/consents"
 BODY: dict[str, Any] = {
@@ -37,61 +36,9 @@ BODY: dict[str, Any] = {
     "additional_info": {"canal": "tienda"},
 }
 
-Sessions = async_sessionmaker[AsyncSession]
-
 
 async def post(client: httpx.AsyncClient, **overrides: Any) -> httpx.Response:
     return await client.post(URL, json={**BODY, **overrides})
-
-
-async def all_rows(sessions: Sessions, model: type) -> list[Any]:
-    async with sessions() as session:
-        return list(await session.scalars(select(model).order_by(model.created_at)))
-
-
-async def count(sessions: Sessions, model: type) -> int:
-    async with sessions() as session:
-        return await session.scalar(select(func.count()).select_from(model))
-
-
-async def get_consent(sessions: Sessions, transaction_id: str) -> Consent | None:
-    async with sessions() as session:
-        return await session.get(Consent, transaction_id)
-
-
-async def reject(sessions: Sessions, transaction_id: str) -> None:
-    """Simula el resultado de RN-01 (M4): NO_ACEPTADO con borrado lógico."""
-    async with sessions.begin() as session:
-        await session.execute(
-            update(Consent)
-            .where(Consent.transaction_id == transaction_id)
-            .values(
-                status=ConsentStatus.NO_ACEPTADO,
-                is_deleted=1,
-                deleted_at=datetime.now(UTC),
-                full_name=None,
-                consent_personal_data=False,
-                consent_marketing_yamaha=None,
-                consent_marketing_dealer=None,
-                responded_at=datetime.now(UTC),
-            )
-        )
-
-
-async def accept(sessions: Sessions, transaction_id: str) -> None:
-    """Simula una aceptación (M4) con marketing de Yamaha en false."""
-    async with sessions.begin() as session:
-        await session.execute(
-            update(Consent)
-            .where(Consent.transaction_id == transaction_id)
-            .values(
-                status=ConsentStatus.ACEPTADO,
-                consent_personal_data=True,
-                consent_marketing_yamaha=False,
-                consent_marketing_dealer=True,
-                responded_at=datetime.now(UTC),
-            )
-        )
 
 
 # --- Creación (201) ---
@@ -266,11 +213,26 @@ async def test_rn04_new_transaction_id_with_active_record(
         "status": "PENDIENTE",
         "whatsapp": None,
     }
-    # El nuevo ID no se convierte en registro: se actualiza el anterior.
-    assert await get_consent(session_factory, "TRX-000999") is None
-    consent = await get_consent(session_factory, "TRX-000123")
-    assert consent.full_name == "JUAN PÉREZ"
-    assert consent.phone == "911222333"
+    # Se actualizan los datos del cliente en el registro principal (RN-04)...
+    primary = await get_consent(session_factory, "TRX-000123")
+    assert primary.full_name == "JUAN PÉREZ"
+    assert primary.phone == "911222333"
+    assert primary.source_transaction_id is None
+
+    # ...y el ID nuevo se registra como copia vinculada, PENDIENTE como el principal.
+    copy = await get_consent(session_factory, "TRX-000999")
+    assert copy is not None
+    assert copy.source_transaction_id == "TRX-000123"
+    assert (copy.document_type, copy.document_number, copy.dealer) == ("DNI", "12345678", "DEALER-001")
+    assert (copy.full_name, copy.phone) == ("JUAN PÉREZ", "911222333")
+    assert copy.status == ConsentStatus.PENDIENTE
+    assert copy.is_deleted == 0
+    assert (copy.consent_personal_data, copy.consent_marketing_yamaha, copy.consent_marketing_dealer) == (
+        None,
+        None,
+        None,
+    )
+    assert copy.responded_at is None
 
     last_request = (await all_rows(session_factory, ConsentRequest))[-1]
     assert (last_request.transaction_id, last_request.consent_transaction_id, last_request.action) == (
@@ -278,11 +240,14 @@ async def test_rn04_new_transaction_id_with_active_record(
         "TRX-000123",
         "UPDATED",
     )
+    # La copia no tiene enlace ni WhatsApp.
     assert len(whatsapp_sender.calls) == 1
-    assert await count(session_factory, ConsentLink) == 1
+    links = await all_rows(session_factory, ConsentLink)
+    assert [link.transaction_id for link in links] == ["TRX-000123"]
+    assert await count(session_factory, WhatsappMessage) == 1
 
 
-async def test_rn04_does_not_touch_consents_of_an_accepted_record(
+async def test_rn04_copy_of_an_accepted_record_gets_the_answers(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
@@ -293,18 +258,87 @@ async def test_rn04_does_not_touch_consents_of_an_accepted_record(
     assert response.json()["status"] == "ACEPTADO"
     assert response.json()["affected_transaction_id"] == "TRX-000123"
 
-    consent = await get_consent(session_factory, "TRX-000123")
-    assert consent.status == ConsentStatus.ACEPTADO
+    primary = await get_consent(session_factory, "TRX-000123")
+    copy = await get_consent(session_factory, "TRX-000999")
+    # El principal no se toca...
+    assert primary.status == ConsentStatus.ACEPTADO
     assert (
-        consent.consent_personal_data,
-        consent.consent_marketing_yamaha,
-        consent.consent_marketing_dealer,
+        primary.consent_personal_data,
+        primary.consent_marketing_yamaha,
+        primary.consent_marketing_dealer,
     ) == (
         True,
         False,
         True,
     )
-    assert consent.responded_at is not None
+    # ...y la copia nace con las mismas respuestas.
+    assert copy.status == ConsentStatus.ACEPTADO
+    assert (copy.consent_personal_data, copy.consent_marketing_yamaha, copy.consent_marketing_dealer) == (
+        True,
+        False,
+        True,
+    )
+    assert copy.responded_at == primary.responded_at
+    assert copy.source_transaction_id == "TRX-000123"
+
+
+async def test_rn04_several_new_ids_link_to_the_primary_not_to_a_copy(
+    api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
+) -> None:
+    await post(api_client)
+    for tid in ("TRX-A", "TRX-B", "TRX-C"):
+        response = await post(api_client, transaction_id=tid)
+        assert response.status_code == 200
+        assert response.json()["affected_transaction_id"] == "TRX-000123"
+
+    for tid in ("TRX-A", "TRX-B", "TRX-C"):
+        assert (await get_consent(session_factory, tid)).source_transaction_id == "TRX-000123"
+    assert await count(session_factory, Consent) == 4
+    assert len(whatsapp_sender.calls) == 1
+
+
+async def test_rn04_resending_a_linked_copy_updates_only_that_copy(
+    api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
+) -> None:
+    await post(api_client)
+    await post(api_client, transaction_id="TRX-000999")
+
+    response = await post(api_client, transaction_id="TRX-000999", full_name="nombre corregido")
+    assert response.status_code == 200
+    assert response.json()["affected_transaction_id"] == "TRX-000999"
+    assert (await get_consent(session_factory, "TRX-000999")).full_name == "NOMBRE CORREGIDO"
+    assert (await get_consent(session_factory, "TRX-000123")).full_name == "JUAN PÉREZ GÓMEZ"
+    assert await count(session_factory, Consent) == 2
+    assert len(whatsapp_sender.calls) == 1
+
+
+async def test_rn05_after_rejection_ignores_old_rejected_copies(
+    api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
+) -> None:
+    await post(api_client)
+    await post(api_client, transaction_id="TRX-COPY")
+    # M4 rechaza el principal y propaga el rechazo a la copia.
+    await reject(session_factory, "TRX-000123")
+    await reject(session_factory, "TRX-COPY")
+
+    response = await post(api_client, transaction_id="TRX-NEW")
+    assert response.status_code == 201
+    assert (await get_consent(session_factory, "TRX-NEW")).source_transaction_id is None
+    assert len(whatsapp_sender.calls) == 2
+
+
+async def test_active_copy_does_not_count_as_the_active_record(
+    api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
+) -> None:
+    # Datos de borde: el principal fue rechazado pero su copia quedó activa (no debería pasar con M4).
+    # Igual se crea un principal nuevo con su enlace: el cliente necesita un enlace para responder.
+    await post(api_client)
+    await post(api_client, transaction_id="TRX-COPY")
+    await reject(session_factory, "TRX-000123")
+
+    response = await post(api_client, transaction_id="TRX-NEW")
+    assert response.status_code == 201
+    assert len(whatsapp_sender.calls) == 2
 
 
 async def test_rn04_document_is_matched_after_normalization(
@@ -320,7 +354,12 @@ async def test_rn04_document_is_matched_after_normalization(
     )
     assert response.status_code == 200
     assert response.json()["affected_transaction_id"] == "TRX-000123"
-    assert await count(session_factory, Consent) == 1
+    copy = await get_consent(session_factory, "TRX-2")
+    assert (copy.document_number, copy.dealer, copy.source_transaction_id) == (
+        "12345678",
+        "DEALER-001",
+        "TRX-000123",
+    )
 
 
 # --- RN-03: mismo documento con otro Dealer (201) ---
@@ -461,7 +500,7 @@ async def test_unexpected_sender_exception_is_recorded_not_500(
 # --- Concurrencia ---
 
 
-async def test_concurrent_new_transactions_for_same_customer_create_only_one_record(
+async def test_concurrent_new_transactions_for_same_customer_create_only_one_primary(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     responses = await asyncio.gather(*(post(api_client, transaction_id=f"TRX-C{i}") for i in range(8)))
@@ -470,7 +509,12 @@ async def test_concurrent_new_transactions_for_same_customer_create_only_one_rec
     assert codes == [200] * 7 + [201]
     created = next(r.json() for r in responses if r.status_code == 201)
     assert {r.json()["affected_transaction_id"] for r in responses} == {created["transaction_id"]}
-    assert await count(session_factory, Consent) == 1
+    # Un solo principal con enlace y WhatsApp; los otros 7 IDs son copias vinculadas a él.
+    consents = await all_rows(session_factory, Consent)
+    assert len(consents) == 8
+    primaries = [c for c in consents if c.source_transaction_id is None]
+    assert [p.transaction_id for p in primaries] == [created["transaction_id"]]
+    assert {c.source_transaction_id for c in consents if c not in primaries} == {created["transaction_id"]}
     assert await count(session_factory, ConsentLink) == 1
     assert len(whatsapp_sender.calls) == 1
     assert await count(session_factory, ConsentRequest) == 8

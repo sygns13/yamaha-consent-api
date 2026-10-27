@@ -56,7 +56,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | RN-01 | **Prevalece sobre el mockup.** El cliente **puede enviar sin marcar ningún check**. Si el check 1 (Tratamiento de Datos Personales) queda desmarcado, el estado final es **NO ACEPTADO**: se aplica **borrado lógico** (`is_deleted = 1`), se **anula el nombre del cliente** (el teléfono se conserva por trazabilidad) y no se conservan las respuestas de marketing. Se notifica a KIZUNA. | Backend (M4, M5) · Landing (M6) |
 | RN-02 | Conformidad vigente para el mismo Dealer. | **KIZUNA — no aplica a este desarrollo** |
 | RN-03 | La conformidad está asociada al Dealer. Un mismo documento con **otro Dealer** genera un registro nuevo, un WhatsApp nuevo y un enlace nuevo. | Backend (M2) |
-| RN-04 | Si llega información de un cliente con un **registro activo** (`is_deleted = 0`) para el mismo Dealer, se **actualizan los datos del cliente** (nombre, teléfono, información adicional), **no** se crea un registro nuevo, **no** se reenvía el WhatsApp y las conformidades se mantienen. Aunque llegue con un **nuevo ID de transacción**, la respuesta a KIZUNA se envía con el **ID de transacción del registro existente (anterior)**. | Backend (M2) |
+| RN-04 | Si llega información de un cliente con un **registro activo** (`is_deleted = 0`) para el mismo Dealer, se **actualizan los datos del cliente** (nombre, teléfono, información adicional) en ese registro, **no** se reenvía el WhatsApp y sus conformidades se mantienen. Si llega con un **nuevo ID de transacción**, ese ID **se registra como copia vinculada** del registro activo (sin enlace ni WhatsApp) con las respuestas que el cliente ya dio; si el cliente aún no responde, la copia queda `PENDIENTE` y **recibe la respuesta** cuando el cliente conteste en el registro original. KIZUNA recibe **una respuesta final por cada ID de transacción**. | Backend (M2, M4, M5) |
 | RN-05 | **Nueva compra tras un rechazo:** si el único registro previo del documento + Dealer está borrado lógicamente (NO ACEPTADO), se crea un **registro nuevo** con el nuevo ID de transacción y se envía un **nuevo WhatsApp** para que el cliente pueda aceptar. Por eso el documento + Dealer **no es único**: la **PK es el ID de transacción**. | Backend (M2) |
 
 ### 1.4 Diagramas y mockups de referencia
@@ -212,11 +212,15 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | `responded_at` | timestamptz | sí | Fecha y hora de aceptación o rechazo |
 | `is_deleted` | smallint | no | `0` por defecto; `1` = borrado lógico. `CHECK (is_deleted IN (0,1))` |
 | `deleted_at` | timestamptz | sí | |
+| `source_transaction_id` | varchar(100) FK → consents | sí | Solo en **copias vinculadas** (RN-04 con un ID nuevo): registro principal del que copia las respuestas. Nulo en los registros principales. `CHECK (source_transaction_id <> transaction_id)` |
 | `created_at` / `updated_at` | timestamptz | no | |
 
 - **Sin restricción única** sobre documento + Dealer: un mismo cliente puede tener varios registros con el mismo Dealer (RN-05).
-- **Índices:** `(document_type, document_number, dealer, is_deleted)`, `status`, `created_at`.
-- **Registro activo** de un documento + Dealer: el más reciente con `is_deleted = 0`. La aplicación debe garantizar que haya **como máximo uno** (bloqueo de fila o índice único parcial `WHERE is_deleted = 0`, **(propuesta)**).
+- **Índices:** `(document_type, document_number, dealer, is_deleted)`, `status`, `created_at`, `source_transaction_id`.
+- **Dos clases de registro:**
+  - **Principal** (`source_transaction_id` nulo): tiene su enlace (`consent_links`) y su WhatsApp; el cliente responde en él.
+  - **Copia vinculada** (`source_transaction_id` con el ID del principal): se crea en RN-04 con un ID de transacción nuevo. No tiene enlace ni WhatsApp; copia el estado y las respuestas del principal.
+- **Registro activo** de un documento + Dealer: el **principal** más reciente con `is_deleted = 0`. Se garantiza que haya **como máximo uno** con el índice único parcial `uq_consents_active_document_dealer` `WHERE is_deleted = 0 AND source_transaction_id IS NULL`. Las copias vinculadas activas no cuentan.
 
 ### Tabla `consent_requests` (historial de solicitudes recibidas desde KIZUNA)
 
@@ -295,6 +299,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 - `alembic upgrade head` crea todo el esquema en una base vacía; `alembic downgrade base` lo revierte.
 - `consents.transaction_id` es PK: insertar dos veces el mismo ID de transacción falla.
 - Se pueden insertar dos registros con el mismo documento + Dealer si el anterior tiene `is_deleted = 1`.
+- Se pueden insertar copias vinculadas activas junto al registro principal activo; dos principales activos del mismo documento + Dealer fallan.
 - `is_deleted` rechaza valores distintos de 0 y 1.
 
 ---
@@ -367,7 +372,14 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
    - Si ese registro tiene `is_deleted = 1` → responder `409` con el estado actual, sin modificar nada **(propuesta)**. Cuerpo: `{"detail": "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato", "transaction_id": "...", "status": "NO_ACEPTADO", "is_deleted": 1}`.
    - Si el reenvío trae **otro documento u otro Dealer**, se conservan los del registro: solo se actualizan nombre, teléfono e información adicional, y se registra un log `WARNING`.
 3. Buscar el **registro activo** del documento + Dealer (`is_deleted = 0`, el más reciente).
-4. **Hay registro activo** (pendiente o aceptado) → **RN-04**: actualizar los datos del cliente en ese registro y registrar `consent_requests` (`UPDATED`, con el nuevo `transaction_id` y la referencia al registro afectado). **No** se crea registro, **no** se reenvía WhatsApp y **no** se tocan las conformidades. Responder `200`. El nuevo ID de transacción **no** se convierte en registro: la respuesta final a KIZUNA (M5) se envía con el **ID de transacción del registro existente (anterior)**, que se devuelve en `affected_transaction_id`.
+4. **Hay registro activo** (principal, pendiente o aceptado) → **RN-04**:
+   - Actualizar los datos del cliente en ese registro y registrar `consent_requests` (`UPDATED`, con el nuevo `transaction_id` y la referencia al registro principal). **No** se reenvía WhatsApp y **no** se tocan sus conformidades.
+   - **Registrar el nuevo ID como copia vinculada:** `consents` con el `transaction_id` recibido, `source_transaction_id` = ID del principal, documento y Dealer del principal, nombre, teléfono e información adicional de la solicitud, y **el estado, los tres checks y `responded_at` del principal tal como estén**. Sin enlace ni WhatsApp.
+     - Si el principal ya fue respondido (`ACEPTADO`), la copia nace con esas respuestas, y KIZUNA recibe también la respuesta final de la copia (M5).
+     - Si el principal está `PENDIENTE`, la copia también; recibe la respuesta cuando el cliente conteste en el principal (M4, paso 7).
+   - Responder `200` con `affected_transaction_id` = ID del principal. Las búsquedas del registro activo usan el documento + Dealer y solo consideran principales, así que varios IDs nuevos se vinculan todos al mismo principal (nunca a otra copia).
+   - El principal se bloquea con `SELECT ... FOR UPDATE`: si en paralelo el cliente está respondiendo (M4), se espera a que termine y la copia nace con la respuesta ya registrada; si la respuesta fue un rechazo, el principal deja de estar activo y se aplica el paso 5 (RN-05).
+   - Un **reenvío del ID de una copia** se trata en el paso 2: se actualizan los datos del cliente de esa copia (no los del principal).
 5. **No hay registro activo** (nunca existió, o solo hay registros con `is_deleted = 1` → **RN-05**) → crear `consents` con el `transaction_id` recibido (`PENDIENTE`, `is_deleted = 0`), registrar `consent_requests` (`CREATED`), crear `consent_links` con token nuevo y **enviar el WhatsApp (M3)**. Responder `201`.
 6. Si falla el envío por Twilio, el registro **se conserva**, el error queda en `whatsapp_messages` y la respuesta lo indica (no es un error 5xx). Una excepción inesperada del envío también se registra como `failed` (en el log solo va el tipo de error, porque el mensaje podría incluir el teléfono).
 
@@ -390,13 +402,18 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 }
 ```
 - `result`: `CREATED` | `UPDATED`.
-- `affected_transaction_id`: el registro que se creó o actualizó; en el paso 4 es el ID del registro activo previo.
+- `affected_transaction_id`: el registro que se creó o actualizó; en el paso 4 es el ID del registro principal activo (el ID recibido queda registrado como copia vinculada y se puede consultar con `GET /api/v1/consents/{transaction_id}`).
+- En el paso 4, `status` es el de la copia recién creada (igual al del principal en ese momento).
 - Si `result` es `UPDATED`, `whatsapp` vale `null`.
 
 ### 2.4 Endpoints de consulta (requieren API Key)
 
 - `GET /api/v1/consents/{transaction_id}` → un registro (`404` si no existe).
-- `GET /api/v1/consents?document_type=DNI&document_number=12345678&dealer=DEALER-001` → **lista** de registros de ese documento (y Dealer, opcional), ordenada por `created_at` descendente. Incluye los borrados lógicamente.
+- `GET /api/v1/consents?document_type=DNI&document_number=12345678&dealer=DEALER-001` → **lista** de registros de ese documento (y Dealer, opcional), ordenada por `created_at` descendente (a igual fecha, por `transaction_id` descendente). Incluye los borrados lógicamente y las copias vinculadas. Sin resultados → `200 []`. Sin paginación.
+- Ambas consultas devuelven también las **copias vinculadas** (RN-04): KIZUNA puede consultar con el ID que envió y obtiene las respuestas que el cliente ya dio (o `PENDIENTE` si aún no responde). La respuesta **no** incluye `source_transaction_id`: el formato es el mismo para principales y copias.
+- El documento de la consulta se normaliza igual que al registrarlo. El `transaction_id` de la ruta se compara exacto.
+- Fechas en ISO 8601 UTC con sufijo `Z` (incluyen microsegundos, p. ej. `2026-10-27T06:14:17.544862Z`).
+- `404 {"detail": "No existe un registro con ese ID de transacción"}` si el ID no existe.
 
 **Response (un registro)**
 ```json
@@ -496,12 +513,14 @@ Busca por `sha256(token)`.
    - `consent_marketing_yamaha = null` y `consent_marketing_dealer = null` (RN-01: no se conservan las respuestas de marketing).
    - Se conservan: `transaction_id`, `document_type`, `document_number`, `dealer`, `phone` (por trazabilidad), `additional_info`, `consent_evidence` y `whatsapp_messages`.
 6. `responded_at = now()` y `consent_links.used_at = now()`.
-7. Crear el registro en `kizuna_notifications` (`PENDIENTE`) y disparar el envío (M5) **después del commit**.
-8. Responder `200 {"status":"ACEPTADO"|"NO_ACEPTADO"}`. La landing redirige a `/gracias` en ambos casos.
+7. **Copias vinculadas (RN-04):** con la fila del principal bloqueada, copiar la respuesta a sus copias vinculadas que sigan `PENDIENTE` con `apply_response_to_linked_copies()` (`app/services/linked_copies.py`, ya implementada en M2). En `ACEPTADO` se copian el estado, los tres checks y `responded_at`; en `NO_ACEPTADO` se aplica RN-01 a cada copia (`is_deleted = 1`, `deleted_at`, `full_name = null`, marketing en `null`; se conservan documento, Dealer, teléfono y transacción).
+8. Crear en `kizuna_notifications` (`PENDIENTE`) **un registro por el principal y uno por cada copia vinculada actualizada en el paso 7**, y disparar los envíos (M5) **después del commit**.
+9. Responder `200 {"status":"ACEPTADO"|"NO_ACEPTADO"}`. La landing redirige a `/gracias` en ambos casos.
 
 ### Criterios de aceptación M4
 
 - Tests: aceptación completa; aceptación con marketing en `false`; RN-01 con los tres checks desmarcados (verificar `full_name = null`, `marketing_* = null`, `is_deleted = 1` y documento, Dealer y transacción conservados); enlace vencido (410); enlace usado (410); doble envío concurrente (solo uno se registra).
+- Copias vinculadas: la respuesta del principal se copia a sus copias `PENDIENTE` (aceptación y RN-01) y se crea una notificación a KIZUNA por cada ID de transacción.
 
 ---
 
@@ -510,6 +529,8 @@ Busca por `sha256(token)`.
 ### Requerimientos
 
 - Tras el envío del cliente (M4), el backend hace `POST` a `KIZUNA_CALLBACK_URL` con la respuesta final.
+- **Una petición por cada ID de transacción:** si el registro tiene copias vinculadas (RN-04), se envía una respuesta para el principal y otra por cada copia, cada una con su propio `transaction_id` y su propia fila en `kizuna_notifications` (reintentos independientes).
+- **Copia que nace ya con respuesta** (el principal estaba `ACEPTADO` cuando llegó el ID nuevo, M2 paso 4): **también se le envía su respuesta final a KIZUNA**, aunque el cliente no vuelva a responder, para que KIZUNA reciba la respuesta de cada ID. En M5, `POST /api/v1/consents` crea esa notificación en `kizuna_notifications` (`PENDIENTE`) en la misma transacción en que crea la copia, y dispara el envío **después del commit**. Hoy queda un `TODO(M5)` en `app/services/consents.py`.
 - **Interruptor:** `KIZUNA_CALLBACK_ENABLED=true|false`. Con `false`, **no se dispara ninguna petición**: la notificación se guarda en `kizuna_notifications` con estado `PENDIENTE` y se registra en el log que el envío está desactivado. Por defecto en `.env.example`: `false`.
 - **Mientras no exista el endpoint real de KIZUNA**, el envío apunta a un **mock** (ver más abajo). Pasar al endpoint real debe requerir **cambios mínimos**: la URL y la autenticación por variables de entorno, y los campos en **una sola función** de mapeo (`build_kizuna_payload()` en `integrations/kizuna_client.py`).
 - **Reintentos:** 1 intento inicial + **hasta 3 reintentos** (`KIZUNA_CALLBACK_MAX_RETRIES=3`), con espera configurable entre intentos (`KIZUNA_CALLBACK_BACKOFF_SECONDS`, por ejemplo `5,30,120`) y timeout por intento (`KIZUNA_CALLBACK_TIMEOUT_SECONDS`).
@@ -648,6 +669,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
    - Alta → WhatsApp → aceptación total → callback a KIZUNA.
    - Alta → envío con todos los checks desmarcados (RN-01) → verificar borrado lógico (`is_deleted = 1`, nombre nulo) y callback.
    - RN-04: reenvío del mismo documento y Dealer con registro activo → solo se actualizan los datos.
+   - RN-04 con un ID nuevo mientras el cliente no responde → la copia queda `PENDIENTE`; al responder el cliente, la copia recibe la respuesta y KIZUNA recibe dos callbacks (uno por ID).
    - RN-03: mismo documento con otro Dealer → registro y WhatsApp nuevos.
    - RN-05: nueva transacción del mismo documento y Dealer tras un rechazo → registro y WhatsApp nuevos.
    - Enlace vencido (bajar temporalmente `LINK_TTL_HOURS`) y enlace usado.
@@ -740,7 +762,7 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 26/10/2026 | Información adicional | Campo JSON libre, hoy sin campos definidos. |
 | 26/10/2026 | Página de agradecimiento | Diseño y texto: propuesta del responsable. |
 | 26/10/2026 | PENDIENTE-02 · Teléfono tras el rechazo | El **teléfono se conserva** por trazabilidad. |
-| 26/10/2026 | PENDIENTE-04 · Nueva transacción con registro activo | Solo se **actualizan los datos** del registro existente (RN-04) y a KIZUNA se le envía la respuesta con el **ID de transacción anterior**. |
+| 26/10/2026 | PENDIENTE-04 · Nueva transacción con registro activo | ~~Solo se **actualizan los datos** del registro existente (RN-04) y a KIZUNA se le envía la respuesta con el **ID de transacción anterior**.~~ **Reemplazada el 27/10/2026** (ver "RN-04 con un ID de transacción nuevo"). |
 | 26/10/2026 | PENDIENTE-08 · Hosting de la landing | **Firebase Hosting**. |
 | 26/10/2026 | PENDIENTE-17 · Nota del mockup | Prevalece RN-01: se **quita** la frase "* Autorización obligatoria para continuar". |
 | 27/10/2026 | Health check | `GET /health` verifica también la base de datos y responde `{"status":"ok","database":"ok"}` (o `503` si la base no responde). |
@@ -756,5 +778,10 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | Reenvío con otro documento o Dealer | Se conservan el documento y el Dealer del registro; solo se actualizan los datos del cliente y se registra un `WARNING`. |
 | 27/10/2026 | Respuesta `409` | `{"detail", "transaction_id", "status", "is_deleted"}`. |
 | 27/10/2026 | WhatsApp dentro de la transacción | El envío ocurre antes del commit, para que un reintento de KIZUNA tras un fallo genere un enlace nuevo. |
+| 27/10/2026 | RN-04 con un ID de transacción nuevo | **Cambia la regla anterior.** El ID nuevo se registra como **copia vinculada** (`consents.source_transaction_id`) con las respuestas del registro principal, para que KIZUNA lo pueda consultar. Si el cliente aún no responde, la copia espera y recibe la respuesta del principal (M4). KIZUNA recibe una respuesta final por cada ID (M5). El índice único parcial pasa a `WHERE is_deleted = 0 AND source_transaction_id IS NULL` (migración `73cfe5a5377e`). |
+| 27/10/2026 | Consultas (2.4) | Sin paginación. Fechas ISO 8601 UTC con `Z` y microsegundos. Lista vacía → `200 []`. |
+| 27/10/2026 | Reenvío del ID de una copia vinculada | Solo se actualizan los datos del cliente de esa copia, no los del principal (paso 2 de la sección 2.3). |
+| 27/10/2026 | `source_transaction_id` en las consultas | No se expone: la respuesta de la sección 2.4 es la misma para principales y copias. |
+| 27/10/2026 | Copia vinculada que nace con respuesta | **También recibe su respuesta final a KIZUNA** (M5), aunque el cliente no vuelva a responder: KIZUNA recibe una respuesta por cada ID de transacción. |
 | 27/10/2026 | Errores HTTP en español | 400 (cuerpo ilegible), 404, 405, 500 y demás errores del framework se devuelven en español y en JSON; el 500 sin detalles internos. Los errores de SQL no incluyen parámetros. |
 | 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |

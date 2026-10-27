@@ -101,6 +101,36 @@ async def test_two_active_rows_for_same_document_and_dealer_fail(session: AsyncS
         await session.flush()
 
 
+async def test_active_linked_copies_are_allowed_next_to_the_active_primary(session: AsyncSession) -> None:
+    # RN-04 con un ID nuevo: el índice único parcial solo cuenta los registros principales.
+    session.add(make_consent("TEST-P"))
+    await session.flush()
+    session.add_all(
+        [
+            make_consent("TEST-C1", source_transaction_id="TEST-P"),
+            make_consent("TEST-C2", source_transaction_id="TEST-P"),
+        ]
+    )
+    await session.flush()
+
+
+async def test_linked_copy_cannot_point_to_itself(session: AsyncSession) -> None:
+    session.add(make_consent("TEST-SELF"))
+    await session.flush()
+    with pytest.raises(IntegrityError, match="ck_consents_source_not_self"):
+        await session.execute(
+            text(
+                "UPDATE consents SET source_transaction_id = transaction_id WHERE transaction_id = 'TEST-SELF'"
+            )
+        )
+
+
+async def test_linked_copy_must_point_to_an_existing_record(session: AsyncSession) -> None:
+    session.add(make_consent("TEST-ORPHAN", source_transaction_id="TEST-NO-EXISTE"))
+    with pytest.raises(IntegrityError, match="fk_consents_source_transaction_id_consents"):
+        await session.flush()
+
+
 async def test_same_document_with_other_dealer_allowed(session: AsyncSession) -> None:
     session.add_all([make_consent("TEST-D1"), make_consent("TEST-D2", dealer="DEALER-OTRO")])
     await session.flush()

@@ -3,12 +3,16 @@
 Todo ocurre en una sola transacción de base de datos, serializada por documento + Dealer con advisory locks de
 PostgreSQL (pg_advisory_xact_lock): un SELECT ... FOR UPDATE no basta porque en el caso CREATED todavía no existe
 ninguna fila que bloquear. El índice único parcial uq_consents_active_document_dealer queda como red de seguridad.
+
+RN-04 con un ID de transacción nuevo: además de actualizar los datos del cliente en el registro principal, el ID
+nuevo se registra como copia vinculada (source_transaction_id) con las respuestas del principal, para que KIZUNA
+pueda consultarlo y reciba una respuesta final por cada ID.
 """
 
 import enum
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
@@ -40,10 +44,12 @@ class RegistrationResult(enum.StrEnum):
 @dataclass(frozen=True)
 class RegistrationOutcome:
     result: RegistrationResult
-    # Registro creado o actualizado. En RN-04 con un ID nuevo es el registro activo previo.
+    # Registro creado o actualizado. En RN-04 con un ID nuevo es el registro principal activo previo.
     consent: Consent
     # Solo en CREATED.
     whatsapp: WhatsappMessage | None = None
+    # Solo en RN-04 con un ID nuevo: el registro creado para ese ID, vinculado a `consent`.
+    linked_copy: Consent | None = None
 
 
 class TransactionAlreadyRejectedError(Exception):
@@ -92,7 +98,10 @@ async def register_consent(
                 )
             return _update_customer_data(session, existing, request)
 
-        # Pasos 3 y 4: registro activo del mismo documento + Dealer (RN-04 con un ID de transacción nuevo).
+        # Pasos 3 y 4: registro PRINCIPAL activo del mismo documento + Dealer (RN-04 con un ID nuevo). Las copias
+        # vinculadas no cuentan: no tienen enlace ni WhatsApp, el cliente responde en el principal.
+        # FOR UPDATE: si en paralelo el cliente está respondiendo en el principal (M4), se espera a que termine y
+        # se copia la respuesta ya registrada (y si fue un rechazo, deja de ser activo y se crea uno nuevo: RN-05).
         active = await session.scalar(
             select(Consent)
             .where(
@@ -100,13 +109,16 @@ async def register_consent(
                 Consent.document_number == request.document_number,
                 Consent.dealer == request.dealer,
                 Consent.is_deleted == 0,
+                Consent.source_transaction_id.is_(None),
             )
             .order_by(Consent.created_at.desc())
             .limit(1)
             .with_for_update()
         )
         if active is not None:
-            return _update_customer_data(session, active, request)
+            outcome = _update_customer_data(session, active, request)
+            copy = await _create_linked_copy(session, active, request)
+            return replace(outcome, linked_copy=copy)
 
         # Paso 5: no hay registro activo (nunca existió, RN-03 con otro Dealer, o RN-05 tras un rechazo).
         return await _create(session, request, sender=sender, settings=settings)
@@ -144,6 +156,46 @@ def _update_customer_data(
         },
     )
     return RegistrationOutcome(result=RegistrationResult.UPDATED, consent=consent)
+
+
+async def _create_linked_copy(
+    session: AsyncSession, primary: Consent, request: ConsentCreateRequest
+) -> Consent:
+    """Registra el ID nuevo como copia del registro principal (RN-04). Sin enlace ni WhatsApp.
+
+    Copia el estado y las respuestas del principal tal como están: si el cliente ya respondió, la copia nace con esa
+    respuesta; si está PENDIENTE, la copia también, y recibirá la respuesta cuando el cliente conteste en el
+    principal (M4).
+    """
+    # TODO(M5): si la copia nace con respuesta (principal ACEPTADO), crear su notificación en kizuna_notifications
+    # en esta misma transacción y enviarla después del commit (decisión del 27/10/2026, ver spec M5).
+    copy = Consent(
+        transaction_id=request.transaction_id,
+        source_transaction_id=primary.transaction_id,
+        document_type=primary.document_type,
+        document_number=primary.document_number,
+        dealer=primary.dealer,
+        full_name=request.full_name,
+        phone=request.phone,
+        additional_info=request.additional_info,
+        status=primary.status,
+        consent_personal_data=primary.consent_personal_data,
+        consent_marketing_yamaha=primary.consent_marketing_yamaha,
+        consent_marketing_dealer=primary.consent_marketing_dealer,
+        responded_at=primary.responded_at,
+        is_deleted=0,
+    )
+    session.add(copy)
+    await session.flush()
+    logger.info(
+        "Solicitud de KIZUNA: ID nuevo registrado como copia vinculada (RN-04)",
+        extra={
+            "transaction_id": copy.transaction_id,
+            "source_transaction_id": primary.transaction_id,
+            "status": copy.status.value,
+        },
+    )
+    return copy
 
 
 async def _create(

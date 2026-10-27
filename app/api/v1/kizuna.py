@@ -2,8 +2,9 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -14,8 +15,11 @@ from app.schemas import (
     ConsentConflictResponse,
     ConsentCreateRequest,
     ConsentCreateResponse,
+    ConsentDetail,
+    ConsentListQuery,
     WhatsAppSendStatus,
 )
+from app.services.consent_queries import get_consent, list_consents
 from app.services.consents import RegistrationResult, TransactionAlreadyRejectedError, register_consent
 
 router = APIRouter(prefix="/api/v1", tags=["kizuna"], dependencies=[ApiKeyDep])
@@ -25,6 +29,11 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 SenderDep = Annotated[WhatsAppSender, Depends(get_whatsapp_sender)]
 
 REJECTED_DETAIL = "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato"
+NOT_FOUND_DETAIL = "No existe un registro con ese ID de transacción"
+
+
+class NotFoundResponse(BaseModel):
+    detail: str
 
 
 @router.post(
@@ -76,3 +85,39 @@ async def create_consent(
         status=outcome.consent.status,
         whatsapp=whatsapp,
     )
+
+
+@router.get(
+    "/consents/{transaction_id}",
+    response_model=ConsentDetail,
+    summary="Consultar un registro por ID de transacción",
+    responses={
+        status.HTTP_404_NOT_FOUND: {"model": NotFoundResponse, "description": "No existe el registro"}
+    },
+)
+async def read_consent(transaction_id: str, session: SessionDep) -> ConsentDetail:
+    """Incluye los registros borrados lógicamente. No devuelve nombre ni teléfono.
+
+    En RN-04 el ID de transacción nuevo no se convierte en registro: consultarlo devuelve 404 (la respuesta de
+    POST indicó el ID del registro afectado en `affected_transaction_id`).
+    """
+    consent = await get_consent(session, transaction_id)
+    if consent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    return ConsentDetail.from_consent(consent)
+
+
+@router.get(
+    "/consents",
+    response_model=list[ConsentDetail],
+    summary="Listar los registros de un documento",
+)
+async def search_consents(
+    query: Annotated[ConsentListQuery, Query()], session: SessionDep
+) -> list[ConsentDetail]:
+    """Registros del documento (y del Dealer, opcional), del más reciente al más antiguo.
+
+    Incluye los borrados lógicamente. Sin resultados → 200 con lista vacía. El documento se normaliza igual que al
+    registrarlo (p. ej. "1234-5678" encuentra "12345678").
+    """
+    return [ConsentDetail.from_consent(consent) for consent in await list_consents(session, query)]
