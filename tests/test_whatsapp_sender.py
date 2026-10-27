@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from app.integrations.whatsapp import FakeWhatsAppSender, get_whatsapp_sender
+from app.integrations.whatsapp import FakeWhatsAppSender
 from app.models import WhatsappStatus
 
 
@@ -21,7 +21,3 @@ async def test_fake_sender_only_logs_with_masked_phone_and_no_token(caplog: pyte
     assert record.to.endswith("4321")
     assert "987654321" not in caplog.text
     assert "token-secreto-abc" not in caplog.text
-
-
-def test_default_sender_is_the_fake_until_m3() -> None:
-    assert isinstance(get_whatsapp_sender(), FakeWhatsAppSender)

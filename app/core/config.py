@@ -45,12 +45,16 @@ class Settings(BaseSettings):
     privacy_policy_version: str = "v1"
 
     # --- Twilio WhatsApp ---
+    # false: no se envían WhatsApp reales (FakeWhatsAppSender solo registra en el log). true: Twilio.
+    twilio_send_enabled: bool = False
     twilio_account_sid: str = ""
     twilio_auth_token: SecretStr = SecretStr("")
     twilio_whatsapp_from: str = ""
     twilio_content_sid: str = ""
     twilio_status_callback_url: str = ""
     twilio_signature_validation_enabled: bool = True
+    # El envío ocurre dentro de la transacción de POST /consents (con el bloqueo del cliente tomado).
+    twilio_timeout_seconds: float = Field(default=10, gt=0)
     phone_country_prefix: str = "51"
 
     # --- Notificación a KIZUNA ---

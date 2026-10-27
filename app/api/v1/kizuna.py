@@ -96,11 +96,7 @@ async def create_consent(
     },
 )
 async def read_consent(transaction_id: str, session: SessionDep) -> ConsentDetail:
-    """Incluye los registros borrados lógicamente. No devuelve nombre ni teléfono.
-
-    En RN-04 el ID de transacción nuevo no se convierte en registro: consultarlo devuelve 404 (la respuesta de
-    POST indicó el ID del registro afectado en `affected_transaction_id`).
-    """
+    """Incluye los registros borrados lógicamente y las copias vinculadas (RN-04). No devuelve nombre ni teléfono."""
     consent = await get_consent(session, transaction_id)
     if consent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)

@@ -256,7 +256,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | `user_agent` | text | |
 | `policy_version` | varchar(20) | `PRIVACY_POLICY_VERSION` |
 | `policy_url` | text | `PRIVACY_POLICY_URL` |
-| `answers` | jsonb | `{"personal_data":bool,"marketing_yamaha":bool,"marketing_dealer":bool}` |
+| `answers` | jsonb | `{"personal_data":bool,"marketing_yamaha":bool,"marketing_dealer":bool}`, exactamente lo que envió el cliente (también en un rechazo) |
 | `submitted_at` | timestamptz | |
 
 > **Decisión:** el borrado lógico **no** afecta esta tabla ni `whatsapp_messages`; solo se anula el nombre del cliente en `consents`.
@@ -279,6 +279,9 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 ### Tabla `whatsapp_message_events` (registro de cada callback de Twilio)
 
 `id`, `message_id` FK, `status`, `error_code`, `raw_payload` jsonb, `received_at`.
+
+- **UNIQUE (`message_id`, `status`)**: un evento por mensaje y estado; hace idempotente el webhook (migración `a43dda5e709f`).
+- `raw_payload` guarda el formulario completo que envía Twilio (incluye el teléfono del cliente): no se loguea.
 
 ### Tabla `kizuna_notifications` (outbox de notificaciones a KIZUNA)
 
@@ -448,7 +451,16 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 ### Requerimientos
 
 - Línea **nueva y exclusiva** en la cuenta Twilio de Yamaha, distinta del número de su chatbot, registrada como remitente de WhatsApp. El nombre visible del remitente es ⚠️ PENDIENTE-11.
-- Envío mediante **Content API**: `messages.create(from_=TWILIO_WHATSAPP_FROM, to="whatsapp:+51...", content_sid=TWILIO_CONTENT_SID, content_variables=json.dumps({...}), status_callback=TWILIO_STATUS_CALLBACK_URL)`.
+- Envío mediante **Content API**: `messages.create(from_=TWILIO_WHATSAPP_FROM, to="whatsapp:+51...", content_sid=TWILIO_CONTENT_SID, content_variables=json.dumps({...}), status_callback=TWILIO_STATUS_CALLBACK_URL)`. Implementado en `app/integrations/twilio_client.py` (`TwilioWhatsAppSender`).
+- **Interruptor `TWILIO_SEND_ENABLED`** (por defecto `false` en `.env.example`): con `false` se usa `FakeWhatsAppSender` y no se envía ningún mensaje real (desarrollo); con `true`, `TwilioWhatsAppSender`.
+  - Con `false`, el mensaje queda en `whatsapp_messages` como `queued` sin SID (no hay un estado "simulado") y al arrancar se registra un log `WARNING`.
+  - Con `true` y `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` o `TWILIO_CONTENT_SID` vacías, o con `TWILIO_WHATSAPP_FROM` sin el formato `whatsapp:+<número>`, **la aplicación no arranca** (`TwilioConfigurationError`, log `CRITICAL`) y el despliegue falla.
+  - Sin `TWILIO_STATUS_CALLBACK_URL` la aplicación arranca con un log `WARNING`: el mensaje se envía sin `status_callback` y su estado no avanza de `queued`.
+- **Detalles del envío:**
+  - El SDK de Twilio es síncrono: se ejecuta en un hilo (`asyncio.to_thread`) con timeout `TWILIO_TIMEOUT_SECONDS`, porque el envío ocurre dentro de la transacción de `POST /api/v1/consents` (con el bloqueo del cliente tomado).
+  - Un error de Twilio (`TwilioRestException`) se guarda como `failed` con su `error_code` y su mensaje original (sin el prefijo `"Unable to create record: "` que agrega el SDK). Un error sin respuesta de Twilio (red, timeout, SSL) se guarda como `failed` sin código. En ningún caso se devuelve 5xx.
+  - Los estados que Twilio puede devolver al crear el mensaje y que no están en `whatsapp_status` (`accepted`, `sending`, `scheduled`) se guardan como `queued`.
+  - En el log no van el token ni el teléfono completo; solo el `transaction_id`, el teléfono enmascarado, el SID, el estado y el código de error.
 - **Plantilla con botón** (decisión): tipo de contenido **Call to Action** (`twilio/call-to-action`) de Twilio Content API.
   - **Cuerpo** (texto final lo define Yamaha **antes** de crear la plantilla; texto base):
     > Estimado cliente, `<MENSAJE_POR_DEFINIR>` Ingrese al siguiente enlace para firmar el consentimiento.
@@ -462,10 +474,17 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 
 ### Webhook `POST /api/v1/webhooks/twilio/status`
 
-- Recibe los callbacks de estado de Twilio (`application/x-www-form-urlencoded`): `MessageSid`, `MessageStatus`, `ErrorCode`, `ErrorMessage`.
-- **Valida la firma** `X-Twilio-Signature` con `twilio.request_validator.RequestValidator` y `TWILIO_AUTH_TOKEN`. Firma inválida → `403`. La validación se puede apagar con `TWILIO_SIGNATURE_VALIDATION_ENABLED=false` (solo para local, **(propuesta)**).
-- Guarda el evento en `whatsapp_message_events` y actualiza `whatsapp_messages.status`, `error_code` y `error_message`.
-- Es idempotente ante callbacks repetidos y responde `204` rápido.
+- Recibe los callbacks de estado de Twilio (`application/x-www-form-urlencoded`): `MessageSid`, `MessageStatus`, `ErrorCode`, `ErrorMessage`. Implementado en `app/api/v1/webhooks.py` y `app/services/whatsapp_status.py`. **No usa API Key**: lo protege la firma.
+- **Valida la firma** `X-Twilio-Signature` con `twilio.request_validator.RequestValidator` y `TWILIO_AUTH_TOKEN`, sobre todos los parámetros recibidos. La validación se puede apagar con `TWILIO_SIGNATURE_VALIDATION_ENABLED=false` (solo para local, **(propuesta)**).
+  - Sin header → `403 {"detail": "Falta la firma de Twilio"}`. Firma inválida → `403 {"detail": "Firma de Twilio inválida"}`. En ambos casos no se guarda nada y se registra un `WARNING` (sin la firma ni el payload).
+  - La firma se valida contra `TWILIO_STATUS_CALLBACK_URL` (la URL que Twilio firma) y, si no coincide, contra la URL de la petición. Detrás de Cloud Run la aplicación ve la petición como `http` interno, por eso la URL configurada es la principal.
+  - Con la validación encendida y `TWILIO_AUTH_TOKEN` vacío se rechazan todos los callbacks y al arrancar se registra un `WARNING`. Con la validación apagada también se registra un `WARNING` al arrancar. **En ninguno de los dos casos se impide el arranque**, tampoco con `APP_ENV=production` (decisión del 27/10/2026, puede revisarse).
+- Guarda el evento en `whatsapp_message_events` y actualiza `whatsapp_messages.status`, `error_code` y `error_message` (este último truncado a 1000 caracteres).
+- **El estado no retrocede.** Twilio puede entregar los callbacks desordenados. Todos se guardan como eventos, pero `whatsapp_messages.status` solo cambia si el estado nuevo está más avanzado: `queued` → `sent` → `delivered` / `failed` / `undelivered` → `read`. `delivered`, `failed` y `undelivered` tienen el mismo nivel: un `delivered` atrasado no cambia un `failed` ni al revés, y uno atrasado no deshace un `read`.
+- Los estados intermedios `accepted`, `sending` y `scheduled` se registran como `queued`, igual que al crear el mensaje.
+- Es **idempotente**: un evento por mensaje y estado (UNIQUE + `INSERT ... ON CONFLICT DO NOTHING`). Un callback repetido, aunque lleguen dos a la vez, no crea otro evento ni vuelve a modificar el mensaje.
+- Responde `204` sin cuerpo, también cuando el callback se ignora: repetido, con un `MessageSid` que no es de este sistema o con un estado que `whatsapp_status` no contempla (p. ej. `canceled`). Los dos últimos casos registran un `WARNING`. Si un callback llegara antes del commit de `POST /api/v1/consents` se ignoraría como SID desconocido; los callbacks siguientes corrigen el estado.
+- Sin `MessageSid` o `MessageStatus` → `422` en español (mismo formato que el resto de la API).
 - Pruebas locales con **ngrok** apuntando `TWILIO_STATUS_CALLBACK_URL` al túnel.
 
 ### Criterios de aceptación M3
@@ -490,8 +509,10 @@ Busca por `sha256(token)`.
   "dealer_display_name": null
 }
 ```
-- `link_status`: `VALID` | `EXPIRED` (`now > expires_at`) | `USED` (`used_at` no nulo).
-- Token inexistente → `404` (la landing lo trata igual que un enlace inválido).
+- Implementado en `app/api/v1/public.py` y `app/services/consent_links.py`. Los endpoints públicos **no usan API Key**.
+- `link_status`: `VALID` | `EXPIRED` (`now > expires_at`) | `USED` (`used_at` no nulo). Un enlace usado y además vencido es `USED` (el cliente ya respondió). Un enlace vencido o usado responde `200` con su `link_status`.
+- Token inexistente → `404 {"detail": "El enlace no existe"}` (la landing lo trata igual que un enlace inválido).
+- `privacy_policy_url` vale `null` si `PRIVACY_POLICY_URL` no está configurada (PENDIENTE-14).
 - ⚠️ PENDIENTE-05: ¿se muestra el nombre del Dealer en la landing? El mockup dice "DEALER" genérico. Mientras tanto `dealer_display_name` vale `null` y la landing muestra "DEALER".
 - **No** devuelve datos personales.
 
@@ -502,10 +523,16 @@ Busca por `sha256(token)`.
 { "personal_data": true, "marketing_yamaha": false, "marketing_dealer": true }
 ```
 
+- Los tres campos son **obligatorios** y deben ser booleanos de JSON (`true`/`false`): `"true"`, `1` o `null` se rechazan, igual que los campos extra → `422` en español. Es evidencia legal: no se interpreta el valor.
+
 **Lógica (en una sola transacción de base de datos)**
-1. Validar el enlace: si es `EXPIRED` o `USED` → `410 Gone` con `link_status`.
-2. Bloquear la fila (`SELECT ... FOR UPDATE`) para evitar doble envío.
+1. Validar el enlace: si es `EXPIRED` o `USED` → `410 Gone` con `{"detail", "link_status"}`: `"El enlace venció"` (`EXPIRED`) o `"El enlace ya fue utilizado"` (`USED`). Token inexistente → `404`. En ningún caso se modifica nada.
+2. Bloquear la fila (`SELECT ... FOR UPDATE`) para evitar doble envío. **El bloqueo se toma antes de validar el paso 1**: así, de dos envíos simultáneos el segundo espera, ve `used_at` y recibe `410 USED`. Después se bloquea también la fila del registro principal (la misma que bloquea `POST /api/v1/consents` antes de crear una copia vinculada).
 3. Registrar `consent_evidence` (IP, user agent, versión y URL de la política, respuestas, fecha).
+   - `answers` guarda **exactamente lo que envió el cliente**, también el marketing marcado en un rechazo (RN-01 anula el marketing en `consents`, no en la evidencia).
+   - IP: la **primera** de `X-Forwarded-For` (se mantiene así para no depender de la nube de despliegue; en Cloud Run ese valor lo puede escribir el propio cliente). Sin el header, la IP de la conexión (local). Si no es una IP válida se guarda `null` y la respuesta se registra igual.
+   - `user_agent` tal cual (o `null` si no viene). `policy_url` guarda `""` si `PRIVACY_POLICY_URL` no está configurada (PENDIENTE-14).
+   - `submitted_at`, `responded_at`, `used_at` y `deleted_at` (en RN-01) llevan el mismo instante.
 4. Si `personal_data = true` → `status = ACEPTADO` y se guardan los 3 valores.
 5. Si `personal_data = false` → **RN-01** (prevalece; se acepta el envío con todos los checks desmarcados):
    - `status = NO_ACEPTADO`, `consent_personal_data = false`.
@@ -515,6 +542,7 @@ Busca por `sha256(token)`.
 6. `responded_at = now()` y `consent_links.used_at = now()`.
 7. **Copias vinculadas (RN-04):** con la fila del principal bloqueada, copiar la respuesta a sus copias vinculadas que sigan `PENDIENTE` con `apply_response_to_linked_copies()` (`app/services/linked_copies.py`, ya implementada en M2). En `ACEPTADO` se copian el estado, los tres checks y `responded_at`; en `NO_ACEPTADO` se aplica RN-01 a cada copia (`is_deleted = 1`, `deleted_at`, `full_name = null`, marketing en `null`; se conservan documento, Dealer, teléfono y transacción).
 8. Crear en `kizuna_notifications` (`PENDIENTE`) **un registro por el principal y uno por cada copia vinculada actualizada en el paso 7**, y disparar los envíos (M5) **después del commit**.
+   - Implementado en `app/services/kizuna_notifications.py`: `enqueue_notifications()` crea las filas con el payload de `build_kizuna_payload()` (`app/integrations/kizuna_client.py`) y `target_url = KIZUNA_CALLBACK_URL`. El router dispara `dispatch_notifications()` como `BackgroundTask`. Hasta M5 ese disparo solo registra en el log (`TODO(M5)`) y la notificación queda `PENDIENTE`.
 9. Responder `200 {"status":"ACEPTADO"|"NO_ACEPTADO"}`. La landing redirige a `/gracias` en ambos casos.
 
 ### Criterios de aceptación M4
@@ -698,12 +726,14 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | `LANDING_BASE_URL` | `https://consentimiento.dominio.com` | Base del enlace enviado por WhatsApp |
 | `PRIVACY_POLICY_URL` | ⚠️ PENDIENTE-14 | |
 | `PRIVACY_POLICY_VERSION` | `v1` | Se guarda en la evidencia |
+| `TWILIO_SEND_ENABLED` | `false` | Enciende o apaga el envío real de WhatsApp. Con `false` no se llama a Twilio: el envío solo se registra en el log y el mensaje queda como `queued` sin SID (desarrollo). Con `true` son obligatorias `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` y `TWILIO_CONTENT_SID` |
 | `TWILIO_ACCOUNT_SID` | | |
 | `TWILIO_AUTH_TOKEN` | *(secreto)* | |
 | `TWILIO_WHATSAPP_FROM` | `whatsapp:+1XXXXXXXXXX` | Número nuevo y exclusivo |
 | `TWILIO_CONTENT_SID` | `HXxxxxxxxx` | Plantilla Call to Action aprobada (botón "Revisar autorizaciones") |
 | `TWILIO_STATUS_CALLBACK_URL` | `https://<api>/api/v1/webhooks/twilio/status` | |
-| `TWILIO_SIGNATURE_VALIDATION_ENABLED` | `true` | (propuesta) |
+| `TWILIO_SIGNATURE_VALIDATION_ENABLED` | `true` | (propuesta) `false` apaga la validación de `X-Twilio-Signature` en el webhook (solo para local). Apagada, o encendida con `TWILIO_AUTH_TOKEN` vacío, la aplicación arranca con un `WARNING` |
+| `TWILIO_TIMEOUT_SECONDS` | `10` | Timeout de cada envío a Twilio (el envío ocurre dentro de la transacción de `POST /api/v1/consents`) |
 | `PHONE_COUNTRY_PREFIX` | `51` | Se antepone al enviar |
 | `KIZUNA_CALLBACK_ENABLED` | `false` | Enciende o apaga el envío final a KIZUNA. Con `false` no sale ninguna petición |
 | `KIZUNA_CALLBACK_URL` | `http://kizuna-mock:8081/kizuna/consent-result` (local) | Endpoint real: ⚠️ PENDIENTE-13 |
@@ -783,5 +813,24 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | Reenvío del ID de una copia vinculada | Solo se actualizan los datos del cliente de esa copia, no los del principal (paso 2 de la sección 2.3). |
 | 27/10/2026 | `source_transaction_id` en las consultas | No se expone: la respuesta de la sección 2.4 es la misma para principales y copias. |
 | 27/10/2026 | Copia vinculada que nace con respuesta | **También recibe su respuesta final a KIZUNA** (M5), aunque el cliente no vuelva a responder: KIZUNA recibe una respuesta por cada ID de transacción. |
+| 27/10/2026 | Interruptor `TWILIO_SEND_ENABLED` | Por defecto `false`: en desarrollo no se envían WhatsApp reales. |
+| 27/10/2026 | Configuración de Twilio incompleta | Con `TWILIO_SEND_ENABLED=true` y datos de Twilio faltantes o mal formados, la aplicación **no arranca** y el despliegue falla (mismo criterio que la API Key). |
+| 27/10/2026 | `TWILIO_TIMEOUT_SECONDS` | Nueva variable (por defecto 10 s): un Twilio colgado no debe retener el bloqueo del cliente indefinidamente. |
+| 27/10/2026 | `TWILIO_STATUS_CALLBACK_URL` vacía | La aplicación arranca con un `WARNING`; el mensaje se envía sin `status_callback`. |
+| 27/10/2026 | Estados de Twilio al crear el mensaje | `accepted`, `sending` y `scheduled` se guardan como `queued`. Con el envío apagado, el mensaje queda `queued` sin SID. |
 | 27/10/2026 | Errores HTTP en español | 400 (cuerpo ilegible), 404, 405, 500 y demás errores del framework se devuelven en español y en JSON; el 500 sin detalles internos. Los errores de SQL no incluyen parámetros. |
 | 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |
+| 27/10/2026 | Webhook de Twilio · orden de los estados | El estado de `whatsapp_messages` no retrocede (`queued` → `sent` → `delivered`/`failed`/`undelivered` → `read`); todos los callbacks se guardan como eventos. |
+| 27/10/2026 | Webhook de Twilio · idempotencia | Un evento por mensaje y estado: UNIQUE (`message_id`, `status`) en `whatsapp_message_events` (migración `a43dda5e709f`). |
+| 27/10/2026 | Webhook de Twilio · URL de la firma | Se valida contra `TWILIO_STATUS_CALLBACK_URL` y, como alternativa, contra la URL de la petición (detrás de Cloud Run la aplicación ve `http` interno). |
+| 27/10/2026 | Webhook de Twilio · callbacks ignorados | `MessageSid` desconocido o estado no contemplado → `204` con `WARNING`. Sin `MessageSid`/`MessageStatus` → `422`. `accepted`/`sending`/`scheduled` se registran como `queued`. |
+| 27/10/2026 | Webhook de Twilio · respuestas 403 | `"Falta la firma de Twilio"` (sin header) y `"Firma de Twilio inválida"`. |
+| 27/10/2026 | Validación de firma apagada en Producción | Por ahora **no impide el arranque**: con `TWILIO_SIGNATURE_VALIDATION_ENABLED=false`, o encendida con `TWILIO_AUTH_TOKEN` vacío, solo se registra un `WARNING`, también con `APP_ENV=production`. |
+| 27/10/2026 | M4 · Bloqueo del enlace | `SELECT ... FOR UPDATE` sobre el enlace **antes** de validar si está vencido o usado; luego sobre el registro principal. |
+| 27/10/2026 | M4 · Enlace usado y vencido | Se informa `USED`. |
+| 27/10/2026 | M4 · Body del envío | Los tres checks son obligatorios y booleanos estrictos de JSON; campos extra rechazados (`422`). |
+| 27/10/2026 | M4 · Respuestas 404 y 410 | `"El enlace no existe"`; `410 {"detail", "link_status"}` con `"El enlace venció"` o `"El enlace ya fue utilizado"`. |
+| 27/10/2026 | M4 · Respuestas en la evidencia | `consent_evidence.answers` guarda exactamente lo que envió el cliente, también el marketing en un rechazo (RN-01 se aplica en `consents`). |
+| 27/10/2026 | M4 · IP de la evidencia | Se mantiene la **primera** IP de `X-Forwarded-For` (la nube de despliegue aún podría cambiar). Sin el header, la IP de la conexión; IP inválida → `null`. |
+| 27/10/2026 | M4 · Política de privacidad sin configurar | `GET` devuelve `privacy_policy_url: null` y la evidencia guarda `""` (PENDIENTE-14). |
+| 27/10/2026 | M4 · Notificación a KIZUNA | M4 crea las filas `PENDIENTE` (payload de `build_kizuna_payload()`) y dispara `dispatch_notifications()` después del commit; el envío HTTP es M5. |

@@ -1,6 +1,6 @@
 """Copias vinculadas (RN-04 con un ID de transacción nuevo): reciben la respuesta del registro principal.
 
-M4 llama a apply_response_to_linked_copies dentro de la misma transacción en la que registra la respuesta del
+M4 (app/services/consent_links.py) llama a apply_response_to_linked_copies dentro de la misma transacción en la que registra la respuesta del
 cliente en el principal, con la fila del principal bloqueada (SELECT ... FOR UPDATE). M2 bloquea esa misma fila
 antes de crear una copia, así que una copia nueva o bien ve la respuesta ya registrada, o bien existe cuando M4
 propaga: ninguna queda PENDIENTE para siempre.
@@ -24,7 +24,7 @@ async def apply_response_to_linked_copies(session: AsyncSession, primary: Consen
     - NO_ACEPTADO (RN-01): además, borrado lógico de cada copia (is_deleted = 1, deleted_at), nombre anulado y
       marketing en null. Documento, Dealer, teléfono y transacción se conservan.
 
-    TODO(M5): crear una notificación a KIZUNA por cada copia devuelta (una respuesta por cada ID de transacción).
+    El llamador crea una notificación a KIZUNA por cada copia devuelta (una respuesta por cada ID de transacción).
     """
     if primary.status == ConsentStatus.PENDIENTE:
         raise ValueError("El registro principal todavía no tiene respuesta")

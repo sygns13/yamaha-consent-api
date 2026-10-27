@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,9 +34,14 @@ class WhatsappMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class WhatsappMessageEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """Cada callback de estado recibido de Twilio."""
+    """Cada callback de estado recibido de Twilio.
+
+    Un evento por mensaje y estado: un callback repetido (mismo MessageSid y MessageStatus) no se vuelve a guardar
+    (idempotencia, M3). La restricción única lo garantiza también ante callbacks concurrentes.
+    """
 
     __tablename__ = "whatsapp_message_events"
+    __table_args__ = (UniqueConstraint("message_id", "status"),)
 
     message_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("whatsapp_messages.id"), nullable=False, index=True

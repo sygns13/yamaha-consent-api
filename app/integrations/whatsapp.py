@@ -1,13 +1,16 @@
 """Envío del WhatsApp con el enlace de la landing.
 
-TODO(M3): agregar TwilioWhatsAppSender (Content API, plantilla Call to Action) y devolverlo en get_whatsapp_sender.
-Mientras tanto se usa FakeWhatsAppSender, que no envía nada.
+- TWILIO_SEND_ENABLED=true  → TwilioWhatsAppSender (app/integrations/twilio_client.py): envío real.
+- TWILIO_SEND_ENABLED=false → FakeWhatsAppSender: no envía nada, solo registra en el log (desarrollo).
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Annotated, Protocol
 
+from fastapi import Depends
+
+from app.core.config import Settings, get_settings
 from app.models.enums import WhatsappStatus
 from app.utils.masking import mask_phone
 
@@ -46,8 +49,26 @@ class FakeWhatsAppSender:
 
 
 _fake_sender = FakeWhatsAppSender()
+# Un TwilioWhatsAppSender por configuración (reutiliza las conexiones HTTP del cliente de Twilio).
+_twilio_senders: dict[tuple[object, ...], WhatsAppSender] = {}
 
 
-def get_whatsapp_sender() -> WhatsAppSender:
-    """Dependencia de FastAPI. Los tests la reemplazan con app.dependency_overrides."""
-    return _fake_sender
+def get_whatsapp_sender(settings: Annotated[Settings, Depends(get_settings)]) -> WhatsAppSender:
+    """Dependencia de FastAPI según TWILIO_SEND_ENABLED. Los tests la reemplazan con app.dependency_overrides."""
+    if not settings.twilio_send_enabled:
+        return _fake_sender
+
+    # Import diferido: twilio_client importa este módulo.
+    from app.integrations.twilio_client import TwilioWhatsAppSender
+
+    key = (
+        settings.twilio_account_sid,
+        settings.twilio_auth_token.get_secret_value(),
+        settings.twilio_whatsapp_from,
+        settings.twilio_content_sid,
+        settings.twilio_status_callback_url,
+        settings.twilio_timeout_seconds,
+    )
+    if key not in _twilio_senders:
+        _twilio_senders[key] = TwilioWhatsAppSender.from_settings(settings)
+    return _twilio_senders[key]
