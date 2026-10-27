@@ -1,11 +1,13 @@
 import logging
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 
 from app.api.v1 import health
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
+from app.core.validation_errors import request_validation_exception_handler
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -19,6 +21,7 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestIdMiddleware)
+app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
 app.include_router(health.router)
 

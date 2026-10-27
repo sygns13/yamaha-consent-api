@@ -317,7 +317,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | Campo | Normalización | Validación |
 |---|---|---|
 | `document_type` | Mayúsculas | Debe estar en el enum |
-| `document_number` | Trim, quitar espacios y guiones, mayúsculas | DNI: 8 dígitos · RUC: 11 dígitos · CE: alfanumérico, máximo 12 · PASAPORTE: alfanumérico, máximo 12 · OTROS: alfanumérico, máximo 20 **(propuesta)** |
+| `document_number` | Trim, quitar espacios y guiones, mayúsculas | DNI: 8 dígitos · RUC: 11 dígitos · CE: alfanumérico, máximo 12 · PASAPORTE: alfanumérico, máximo 12 · OTROS: alfanumérico, máximo 20 **(propuesta)**. *Alfanumérico* = letras A–Z, **Ñ** y dígitos 0–9 (sin tildes) |
 | `full_name` | Trim, colapsar espacios múltiples, **MAYÚSCULAS conservando tildes y Ñ** (`str.upper()`) | No vacío, máximo 250 |
 | `phone` | Quitar todo lo que no sea dígito; si quedan 11 dígitos y empieza con `51`, quitar `51` | Exactamente **9 dígitos** (formato `XXXXXXXXX`) |
 | `dealer` | Trim | No vacío (⚠️ PENDIENTE-05) |
@@ -325,7 +325,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 > Al enviar por Twilio, el teléfono se arma como `whatsapp:+51` + `phone`. ⚠️ PENDIENTE-10: los números extranjeros no son compatibles con la regla de 9 dígitos.
 
-Un error de validación responde `422` con el detalle del campo.
+Un error de validación responde `422` con el detalle del campo: `{"detail": [{"type": "...", "loc": ["body", "phone"], "msg": "..."}]}`. Los mensajes (`msg`) están **en español**, incluidos los que genera Pydantic. La respuesta **no** devuelve el valor recibido (`input`), porque puede ser un dato personal.
 
 ### 2.3 `POST /api/v1/consents` — recepción desde KIZUNA (requiere API Key)
 
@@ -718,4 +718,6 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | Health check | `GET /health` verifica también la base de datos y responde `{"status":"ok","database":"ok"}` (o `503` si la base no responde). |
 | 27/10/2026 | Credenciales de la base de datos | Se elimina `DATABASE_PASSWORD`: la conexión usa solo `DATABASE_URL` con la **URL completa**. En el primer sprint se define en `.env` (desarrollo local); en Producción es un secreto de Secret Manager. |
 | 27/10/2026 | `whatsapp_messages.to_phone` | Se amplía de `varchar(20)` a `varchar(30)`: el formato `whatsapp:+51XXXXXXXXX` ocupa 21 caracteres. |
+| 27/10/2026 | Documentos alfanuméricos | En CE, PASAPORTE y OTROS, *alfanumérico* incluye la letra **Ñ** (A–Z, Ñ, 0–9; sin tildes). |
+| 27/10/2026 | Errores de validación | Todos los mensajes del `422` se devuelven en español (también los de Pydantic) y sin el valor recibido. |
 | 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |
