@@ -13,6 +13,7 @@ tests
 mocks
 scripts
 postman
+deploy
 assets
 *.md
 docker-compose.yml

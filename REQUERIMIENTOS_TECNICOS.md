@@ -678,18 +678,30 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | Recurso | Configuración |
 |---|---|
 | APIs a habilitar | Cloud Run, Cloud SQL Admin, Secret Manager, Artifact Registry, Cloud Logging, Firebase Hosting |
-| Cloud SQL | PostgreSQL 16; tier pequeño (por ejemplo `db-g1-small` o equivalente, a validar con Yamaha); backups automáticos activados; base `consents_db` y usuario de aplicación con privilegios mínimos |
-| Secret Manager | `DATABASE_URL` (URL completa, incluye la contraseña), `API_KEY`, `TWILIO_AUTH_TOKEN`, `KIZUNA_CALLBACK_AUTH_VALUE` |
+| Cloud SQL | PostgreSQL 16; tier pequeño (por ejemplo `db-g1-small` o equivalente, a validar con Yamaha; los tiers de núcleo compartido requieren `--edition=ENTERPRISE`); backups automáticos activados; base `consents_db`. Dos usuarios: `consent_owner` (dueño del esquema, solo para migraciones) y `consent_app` (el de la aplicación, creado por SQL con solo `SELECT/INSERT/UPDATE/DELETE` sobre las tablas y `ALTER DEFAULT PRIVILEGES` para las tablas futuras). Los usuarios creados con `gcloud` reciben `cloudsqlsuperuser`, por eso el de la aplicación se crea por SQL |
+| Secret Manager | `DATABASE_URL` (URL completa con el usuario `consent_app`, incluye la contraseña), `API_KEY`, `TWILIO_AUTH_TOKEN`, `KIZUNA_CALLBACK_AUTH_VALUE` (este último solo cuando PENDIENTE-13 defina la autenticación de KIZUNA). Se cargan por la entrada estándar (`--data-file=-`) y se montan con `:latest` |
 | Artifact Registry | Repositorio Docker `consent-api` |
 | Service Account | `consent-api-sa` con roles `Cloud SQL Client` y `Secret Manager Secret Accessor` |
 | Cloud Run `consent-api` | `--min-instances=1`, `--no-cpu-throttling` (CPU siempre asignada, por M5), `--add-cloudsql-instances`, `--set-secrets`, ingreso público (lo usan KIZUNA y Twilio) |
 | Firebase Hosting | Se agrega Firebase al **mismo proyecto de Google Cloud**; sitio `consent-landing`; dominio propio verificado con registros DNS en Hostinger; SSL automático |
 
+### Imagen del backend (`Dockerfile`)
+
+- Dos etapas: `python:3.12-slim` con uv (versión fija) instala solo las dependencias de producción de `uv.lock` (`uv sync --frozen --no-dev`); la imagen final, también `python:3.12-slim`, no lleva uv.
+- Corre como usuario sin privilegios (`appuser`, uid 10001); el código queda de root y la aplicación no puede modificarlo.
+- Incluye `alembic/` y `alembic.ini` (las migraciones pueden correrse desde la imagen). No incluye `.env`, tests, mocks, `scripts/`, `postman/` ni `deploy/` (`.dockerignore`).
+- `uvicorn` escucha en `$PORT` (8080 por defecto), con `exec` para recibir el `SIGTERM` de Cloud Run, y con `--proxy-headers --forwarded-allow-ips '*'` para ver `https` detrás del proxy de Cloud Run (validación de la firma de Twilio).
+
+### Variables de entorno de Cloud Run (`deploy/cloudrun.env.yaml`)
+
+- Plantilla con **todas** las variables no secretas de la sección 9, para `--env-vars-file` (no `--set-env-vars`, que separa por comas y rompería `CORS_ALLOWED_ORIGINS` y `KIZUNA_CALLBACK_BACKOFF_SECONDS`). Los valores `<...>` se reemplazan antes de desplegar. Un test verifica que no falte ninguna variable y que no incluya secretos.
+- Valores iniciales: `APP_ENV=production`, `API_KEY_ENABLED=true`, `TWILIO_SIGNATURE_VALIDATION_ENABLED=true`, `TWILIO_SEND_ENABLED=false` (hasta que la plantilla esté aprobada por Meta y exista `TWILIO_CONTENT_SID`; PENDIENTE-07 y 15), `KIZUNA_CALLBACK_ENABLED=false` (paso 5) y `DOCS_ENABLED=true` (valor por defecto; ⚠️ PENDIENTE-12).
+
 ### Pasos de despliegue manual (documentar en el `README.md` de cada repositorio)
 
-1. `docker build` y `docker push` de la imagen a Artifact Registry (o `gcloud builds submit`).
-2. Ejecutar migraciones: Cloud SQL Auth Proxy local + `alembic upgrade head`.
-3. `gcloud run deploy consent-api --image ... --region <REGION> --service-account consent-api-sa --min-instances=1 --no-cpu-throttling --add-cloudsql-instances <INSTANCE> --set-env-vars ... --set-secrets ...`
+1. `docker build --platform linux/amd64` y `docker push` de la imagen a Artifact Registry (o `gcloud builds submit`).
+2. Ejecutar migraciones **antes** del deploy: Cloud SQL Auth Proxy local + `alembic upgrade head` con el usuario `consent_owner`.
+3. `gcloud run deploy consent-api --image ... --region <REGION> --service-account consent-api-sa --min-instances=1 --no-cpu-throttling --add-cloudsql-instances <INSTANCE> --allow-unauthenticated --env-vars-file deploy/cloudrun.env.yaml --set-secrets ...`
 4. Configurar en Twilio el `status_callback` con la URL de Cloud Run.
 5. Mantener `KIZUNA_CALLBACK_ENABLED=false` hasta tener el endpoint real de KIZUNA y su contrato confirmado.
 6. Landing: `npm run build` con las variables `PUBLIC_*` de Producción y `firebase deploy --only hosting`.
@@ -858,3 +870,8 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | M5 · Reproceso al arrancar | Nueva variable `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` (10). Al arrancar con el envío encendido se envían **todas** las `PENDIENTE` sin reclamar (antiguas y recientes, también las acumuladas con el envío apagado) y las de reclamo vencido. |
 | 27/10/2026 | M5 · Reclamo con SKIP LOCKED | Cada notificación se reclama con `SELECT ... FOR UPDATE SKIP LOCKED` (`kizuna_notifications.claimed_at`, migración `94fef8d63ecf`) para que dos instancias no la envíen dos veces. |
 | 27/10/2026 | M5 · `transaction_id` en RN-04 | Se mantiene la regla del 27/10 ("RN-04 con un ID de transacción nuevo"): cada ID (principal y copias) se notifica con **su propio** `transaction_id`. |
+| 27/10/2026 | M7 · Imagen | `Dockerfile` en dos etapas (uv solo en la de construcción), usuario sin privilegios, `uvicorn` en `$PORT` con `--proxy-headers --forwarded-allow-ips '*'` para ver `https` detrás de Cloud Run. |
+| 27/10/2026 | M7 · Variables no secretas | Se pasan con `--env-vars-file deploy/cloudrun.env.yaml` en lugar de `--set-env-vars` (hay valores con comas). Plantilla inicial con `TWILIO_SEND_ENABLED=false`, `KIZUNA_CALLBACK_ENABLED=false` y `DOCS_ENABLED=true` (PENDIENTE-12). |
+| 27/10/2026 | M7 · Usuarios de base de datos | `consent_owner` corre las migraciones; `consent_app` (creado por SQL, solo DML) es el de la aplicación, porque los usuarios creados con `gcloud` reciben `cloudsqlsuperuser`. |
+| 27/10/2026 | M7 · Secretos | `KIZUNA_CALLBACK_AUTH_VALUE` queda fuera de `--set-secrets` hasta que PENDIENTE-13 defina la autenticación de KIZUNA. Los secretos se montan con `:latest`. |
+| 27/10/2026 | M7 · Tier de Cloud SQL | `db-g1-small` requiere `--edition=ENTERPRISE` (Enterprise Plus no ofrece tiers de núcleo compartido); el tier sigue a validar con Yamaha. |
