@@ -11,6 +11,8 @@
 .ruff_cache
 tests
 mocks
+scripts
+postman
 assets
 *.md
 docker-compose.yml

@@ -60,5 +60,32 @@ uv run alembic downgrade base                           # revierte todo el esque
 ```bash
 uv run ruff check .
 uv run ruff format .
-uv run pytest
+uv run pytest                    # todos los tests (usa la base consents_db_test, que se crea y migra sola)
+uv run pytest -m integration     # solo los de punta a punta (tests/test_e2e_local.py)
 ```
+
+Los tests de punta a punta recorren el flujo completo:
+1. KIZUNA envía el cliente y se genera el enlace.
+2. El cliente abre el enlace y envía sus respuestas.
+3. El backend envía el callback al mock de KIZUNA.
+
+Cubren aceptación, RN-01, RN-04 y RN-05. Los callbacks salen por HTTP real al mock de docker compose (`docker compose up -d`). Si el mock no
+responde, se saltan; otra URL: `KIZUNA_MOCK_URL=http://host:puerto`.
+
+## Postman
+
+Colección en `postman/collection.json`: health, endpoints de KIZUNA, landing, webhook de Twilio y mock de KIZUNA.
+Variables: `base_url`, `api_key`, `token`, `transaction_id`, `kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
+
+El token del enlace solo viaja en el WhatsApp y nunca se guarda ni se loguea. Para obtener uno en local, después de
+`Registrar cliente`:
+
+```bash
+uv run python -m scripts.issue_local_link TRX-000123   # imprime token=... y la URL de la landing
+```
+
+El script reemplaza el token del enlace de esa transacción (el anterior deja de servir). Solo funciona con un
+registro principal `PENDIENTE` y no corre con `APP_ENV=production`.
+
+Para el webhook de Twilio, con `twilio_auth_token` igual a `TWILIO_AUTH_TOKEN` la colección calcula la firma
+`X-Twilio-Signature`. Si se deja vacío, el webhook solo acepta la petición con `TWILIO_SIGNATURE_VALIDATION_ENABLED=false`.

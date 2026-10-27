@@ -1,0 +1,335 @@
+{
+  "info": {
+    "_postman_id": "6f1c2a7e-3b9d-4c55-9a0e-2d8f5b7c1e40",
+    "name": "Yamaha Consent API",
+    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: lo completa `Registrar cliente` con el ID que creó.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "X-API-Key", "type": "string" },
+      { "key": "value", "value": "{{api_key}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "api_key", "value": "", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "transaction_id", "value": "TRX-000123", "type": "string" },
+    { "key": "document_type", "value": "DNI", "type": "string" },
+    { "key": "document_number", "value": "12345678", "type": "string" },
+    { "key": "dealer", "value": "DEALER-001", "type": "string" },
+    { "key": "kizuna_mock_url", "value": "http://localhost:8081", "type": "string" },
+    { "key": "twilio_auth_token", "value": "", "type": "string" },
+    { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] },
+            "description": "`200 {\"status\":\"ok\",\"database\":\"ok\"}`; `503` si la base de datos no responde."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Base de datos OK', () => pm.expect(pm.response.json().database).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "KIZUNA (API Key)",
+      "description": "Endpoints que consume KIZUNA. Requieren `X-API-Key: {{api_key}}` (heredado de la colección).",
+      "item": [
+        {
+          "name": "Registrar cliente (nuevo transaction_id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 CREATED o 200 UPDATED', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "if (body.transaction_id) {",
+                  "  pm.collectionVariables.set('transaction_id', body.transaction_id);",
+                  "  console.log('transaction_id =', body.transaction_id, '→ token: uv run python -m scripts.issue_local_link ' + body.affected_transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"TRX-{{$timestamp}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan  pérez   gómez\",\n  \"phone\": \"+51 987 654 321\",\n  \"dealer\": \"{{dealer}}\",\n  \"additional_info\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
+            "description": "Genera un `transaction_id` nuevo en cada envío (`TRX-<timestamp>`) y lo guarda en la variable `transaction_id`.\n\n- Sin registro activo del documento + Dealer → `201 CREATED`: registro, enlace y WhatsApp (RN-03, RN-05).\n- Con registro activo → `200 UPDATED` (RN-04): se actualizan los datos del cliente, `affected_transaction_id` es el registro principal y el ID nuevo queda como copia vinculada. Sin WhatsApp."
+          }
+        },
+        {
+          "name": "Reenviar la misma transacción (RN-04)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan pérez gómez\",\n  \"phone\": \"911222333\",\n  \"dealer\": \"{{dealer}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
+            "description": "Mismo `transaction_id`: `200 UPDATED` (datos del cliente actualizados, sin WhatsApp). Si la transacción fue rechazada (NO_ACEPTADO) → `409`."
+          }
+        },
+        {
+          "name": "Registrar con otro Dealer (RN-03)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"TRX-D2-{{$timestamp}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan pérez gómez\",\n  \"phone\": \"987654321\",\n  \"dealer\": \"DEALER-002\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
+            "description": "Mismo documento con otro Dealer: `201 CREATED`, registro, enlace y WhatsApp nuevos."
+          }
+        },
+        {
+          "name": "Registrar con datos inválidos (422)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"TRX-INVALIDO\",\n  \"document_type\": \"DNI\",\n  \"document_number\": \"1234\",\n  \"full_name\": \"juan pérez\",\n  \"phone\": \"12345\",\n  \"dealer\": \"DEALER-001\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
+            "description": "DNI con menos de 8 dígitos y teléfono inválido: `422` con los mensajes en español."
+          }
+        },
+        {
+          "name": "Consultar por transaction_id",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/consents/{{transaction_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "consents", "{{transaction_id}}"]
+            },
+            "description": "Un registro (principal o copia vinculada). Sin nombre ni teléfono. `404` si no existe."
+          }
+        },
+        {
+          "name": "Listar por documento y Dealer",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/consents?document_type={{document_type}}&document_number={{document_number}}&dealer={{dealer}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "consents"],
+              "query": [
+                { "key": "document_type", "value": "{{document_type}}" },
+                { "key": "document_number", "value": "{{document_number}}" },
+                { "key": "dealer", "value": "{{dealer}}", "description": "Opcional" }
+              ]
+            },
+            "description": "Registros del documento (y Dealer), del más reciente al más antiguo. Incluye los rechazados y las copias vinculadas. Sin resultados → `200 []`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Landing (pública)",
+      "description": "Endpoints que usa la landing. **Sin API Key.** Necesitan la variable `token` (ver la descripción de la colección).",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "Validar enlace",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('link_status VALID, EXPIRED o USED', () => pm.expect(pm.response.json().link_status).to.be.oneOf(['VALID', 'EXPIRED', 'USED']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/public/consent-links/{{token}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "public", "consent-links", "{{token}}"]
+            },
+            "description": "`200 {\"link_status\", \"privacy_policy_url\", \"dealer_display_name\"}`. Token inexistente → `404`."
+          }
+        },
+        {
+          "name": "Enviar respuestas (aceptación)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"personal_data\": true,\n  \"marketing_yamaha\": false,\n  \"marketing_dealer\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/public/consent-links/{{token}}/submit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "public", "consent-links", "{{token}}", "submit"]
+            },
+            "description": "`200 {\"status\":\"ACEPTADO\"}`. Un enlace vencido o ya usado → `410` con `link_status`. Dispara el callback a KIZUNA (uno por cada ID de transacción)."
+          }
+        },
+        {
+          "name": "Enviar respuestas (RN-01: todo desmarcado)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"personal_data\": false,\n  \"marketing_yamaha\": false,\n  \"marketing_dealer\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/public/consent-links/{{token}}/submit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "public", "consent-links", "{{token}}", "submit"]
+            },
+            "description": "`200 {\"status\":\"NO_ACEPTADO\"}`: borrado lógico (`is_deleted = 1`, nombre anulado, marketing en `null`)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook Twilio",
+      "description": "Callback de estado de Twilio. **Sin API Key**: lo protege la firma `X-Twilio-Signature`.\n\n- Con `twilio_auth_token` vacío no se envía firma: requiere `TWILIO_SIGNATURE_VALIDATION_ENABLED=false` en el `.env` (o responde `403`).\n- Con `twilio_auth_token` = `TWILIO_AUTH_TOKEN` del `.env`, el script calcula la firma sobre la URL de la petición (sirve si `TWILIO_STATUS_CALLBACK_URL` está vacía o es esa misma URL).\n- `message_sid` debe ser el `twilio_message_sid` de un mensaje real. Con `TWILIO_SEND_ENABLED=false` los mensajes no tienen SID: el webhook responde `204` y lo ignora.",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "Estado del mensaje",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Firma de Twilio: HMAC-SHA1 (Base64) de la URL + cada parámetro (nombre y valor) ordenado por nombre.",
+                  "const authToken = pm.variables.get('twilio_auth_token');",
+                  "pm.request.headers.remove('X-Twilio-Signature');",
+                  "if (authToken) {",
+                  "  const url = pm.variables.replaceIn(pm.request.url.toString());",
+                  "  const params = {};",
+                  "  pm.request.body.urlencoded.each((p) => { if (!p.disabled) params[p.key] = pm.variables.replaceIn(p.value); });",
+                  "  const data = Object.keys(params).sort().reduce((acc, key) => acc + key + params[key], url);",
+                  "  const signature = CryptoJS.HmacSHA1(data, authToken).toString(CryptoJS.enc.Base64);",
+                  "  pm.request.headers.add({ key: 'X-Twilio-Signature', value: signature });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('204 No Content', () => pm.response.to.have.status(204));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "MessageSid", "value": "{{message_sid}}" },
+                { "key": "MessageStatus", "value": "delivered", "description": "queued, sent, delivered, read, failed o undelivered" },
+                { "key": "ErrorCode", "value": "", "disabled": true },
+                { "key": "ErrorMessage", "value": "", "disabled": true }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/webhooks/twilio/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "webhooks", "twilio", "status"]
+            },
+            "description": "`204` (también ante callbacks repetidos o de mensajes desconocidos). Sin firma → `403 \"Falta la firma de Twilio\"`; firma inválida → `403 \"Firma de Twilio inválida\"`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Mock KIZUNA (solo local)",
+      "description": "Mock de KIZUNA de docker compose. No se despliega en Producción. `MOCK_FAIL_TIMES=N` responde 500 las primeras N veces; `MOCK_RESPONSE_DELAY_SECONDS` simula un timeout.",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "Payloads recibidos",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{kizuna_mock_url}}/kizuna/received",
+              "host": ["{{kizuna_mock_url}}"],
+              "path": ["kizuna", "received"]
+            },
+            "description": "`{\"total_requests\", \"received\": [{\"received_at\", \"payload\"}]}`. `total_requests` incluye los fallos simulados."
+          }
+        },
+        {
+          "name": "Reiniciar recibidos",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{kizuna_mock_url}}/kizuna/received",
+              "host": ["{{kizuna_mock_url}}"],
+              "path": ["kizuna", "received"]
+            },
+            "description": "Vacía la lista y reinicia el contador (`204`)."
+          }
+        },
+        {
+          "name": "Enviar resultado (como el backend)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"dealer\": \"{{dealer}}\",\n  \"status\": \"ACEPTADO\",\n  \"consents\": {\n    \"personal_data\": true,\n    \"marketing_yamaha\": false,\n    \"marketing_dealer\": true\n  },\n  \"responded_at\": \"2026-11-05T15:20:11Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{kizuna_mock_url}}/kizuna/consent-result",
+              "host": ["{{kizuna_mock_url}}"],
+              "path": ["kizuna", "consent-result"]
+            },
+            "description": "Payload propuesto en M5 (PENDIENTE-13). `200 {\"received\": true}`; estructura inválida → `422`."
+          }
+        }
+      ]
+    }
+  ]
+}
