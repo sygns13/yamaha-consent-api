@@ -19,7 +19,5 @@ async def health(session: SessionDep) -> JSONResponse:
     try:
         await session.execute(text("SELECT 1"))
     except (SQLAlchemyError, OSError):
-        return JSONResponse(
-            {"status": "error", "database": "unreachable"}, status_code=503
-        )
+        return JSONResponse({"status": "error", "database": "unreachable"}, status_code=503)
     return JSONResponse({"status": "ok", "database": "ok"})

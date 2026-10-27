@@ -4,7 +4,7 @@
 |---|---|
 | Cliente | Yamaha – Perú |
 | Proveedor / Responsable técnico | Cristian Fernando Chávez Torres |
-| Versión del documento | 1.2 — 26/10/2026 (incorpora las decisiones de la sección 11) |
+| Versión del documento | 1.3 — 27/10/2026 (incorpora las decisiones de la sección 11) |
 | Nube | Google Cloud (proyecto provisto por Yamaha). **Base de datos, backend y landing se despliegan en Google Cloud** |
 | Stack | Python + FastAPI · PostgreSQL (Cloud SQL) · Astro · Twilio WhatsApp |
 | Ambiente | Solo Producción (desarrollo y pruebas en local) |
@@ -166,10 +166,12 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 - Logging estructurado en JSON con `request_id` por petición.
 - Utilidad de enmascarado: documento `****5678`, teléfono `*****4321`.
 - OpenAPI (Swagger) disponible en `/docs`. ⚠️ PENDIENTE-12: ¿debe quedar expuesto en Producción? Mientras tanto se controla con `DOCS_ENABLED`.
+- `GET /health` verifica también la conexión a la base de datos: `200 {"status":"ok","database":"ok"}`; si la base no responde, `503 {"status":"error","database":"unreachable"}`.
+- `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API se ejecuta en el host con `uv run uvicorn app.main:app --reload --port 8000`. Con `docker compose --profile api up` también se levanta la API en un contenedor (mismo `Dockerfile` que Cloud Run).
 
 **Criterios de aceptación**
 
-- `docker compose up` levanta PostgreSQL y el mock de KIZUNA, y la API responde `GET /health` → `200 {"status":"ok"}`.
+- `docker compose up` levanta PostgreSQL y el mock de KIZUNA, y la API responde `GET /health` → `200 {"status":"ok","database":"ok"}`.
 - `ruff check` y `pytest` pasan sin errores.
 
 ---
@@ -263,7 +265,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | `transaction_id` | varchar(100) FK → consents | |
 | `link_id` | uuid FK → consent_links | |
 | `twilio_message_sid` | varchar(64) UNIQUE null | Nulo si falló antes de llegar a Twilio |
-| `to_phone` | varchar(20) | `whatsapp:+51XXXXXXXXX` |
+| `to_phone` | varchar(30) | `whatsapp:+51XXXXXXXXX` (21 caracteres; 30 admite un número E.164 completo, ver PENDIENTE-10) |
 | `content_sid` | varchar(64) | Plantilla usada |
 | `status` | whatsapp_status | Último estado conocido |
 | `error_code` | varchar(20) null | Código de error de Twilio |
@@ -514,7 +516,8 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 - `POST /kizuna/consent-result`: valida que el payload tenga la estructura esperada, lo registra en el log (enmascarando el documento) y responde `200 {"received": true}`.
 - Para simular fallos y probar los reintentos: `MOCK_FAIL_TIMES=N` (responde `500` las primeras N veces) y `MOCK_RESPONSE_DELAY_SECONDS` (simula un timeout).
 - `GET /kizuna/received`: lista los payloads recibidos (útil en pruebas).
-- Valor local: `KIZUNA_CALLBACK_URL=http://kizuna-mock:8081/kizuna/consent-result`.
+- Valor local: `KIZUNA_CALLBACK_URL=http://localhost:8081/kizuna/consent-result` si la API corre en el host (`uv run uvicorn`), o `http://kizuna-mock:8081/kizuna/consent-result` si corre dentro de docker compose (el compose lo fija).
+- `DELETE /kizuna/received`: reinicia el contador y la lista de payloads (útil entre pruebas).
 - El mock **no se despliega** en Producción.
 
 ### Criterios de aceptación M5
@@ -585,7 +588,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 |---|---|
 | APIs a habilitar | Cloud Run, Cloud SQL Admin, Secret Manager, Artifact Registry, Cloud Logging, Firebase Hosting |
 | Cloud SQL | PostgreSQL 16; tier pequeño (por ejemplo `db-g1-small` o equivalente, a validar con Yamaha); backups automáticos activados; base `consents_db` y usuario de aplicación con privilegios mínimos |
-| Secret Manager | `DATABASE_PASSWORD`, `API_KEY`, `TWILIO_AUTH_TOKEN`, `KIZUNA_CALLBACK_AUTH_VALUE` |
+| Secret Manager | `DATABASE_URL` (URL completa, incluye la contraseña), `API_KEY`, `TWILIO_AUTH_TOKEN`, `KIZUNA_CALLBACK_AUTH_VALUE` |
 | Artifact Registry | Repositorio Docker `consent-api` |
 | Service Account | `consent-api-sa` con roles `Cloud SQL Client` y `Secret Manager Secret Accessor` |
 | Cloud Run `consent-api` | `--min-instances=1`, `--no-cpu-throttling` (CPU siempre asignada, por M5), `--add-cloudsql-instances`, `--set-secrets`, ingreso público (lo usan KIZUNA y Twilio) |
@@ -636,7 +639,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | `APP_ENV` | `local` / `production` | |
 | `LOG_LEVEL` | `INFO` | |
 | `DOCS_ENABLED` | `true` | Swagger en `/docs` (⚠️ PENDIENTE-12) |
-| `DATABASE_URL` | `postgresql+asyncpg://user:pass@host:5432/consents_db` | En Cloud Run, vía socket de Cloud SQL |
+| `DATABASE_URL` | `postgresql+asyncpg://user:pass@host:5432/consents_db` | **URL completa, incluida la contraseña** (no hay una variable `DATABASE_PASSWORD` aparte). Es un secreto. En local se define en `.env`; en Cloud Run se monta desde Secret Manager y usa el socket de Cloud SQL (`postgresql+asyncpg://user:pass@/consents_db?host=/cloudsql/<INSTANCE>`) |
 | `API_KEY_ENABLED` | `true` | `false` desactiva la validación (pruebas locales) |
 | `API_KEY_HEADER` | `X-API-Key` | |
 | `API_KEY` | *(secreto)* | |
@@ -712,3 +715,7 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 26/10/2026 | PENDIENTE-04 · Nueva transacción con registro activo | Solo se **actualizan los datos** del registro existente (RN-04) y a KIZUNA se le envía la respuesta con el **ID de transacción anterior**. |
 | 26/10/2026 | PENDIENTE-08 · Hosting de la landing | **Firebase Hosting**. |
 | 26/10/2026 | PENDIENTE-17 · Nota del mockup | Prevalece RN-01: se **quita** la frase "* Autorización obligatoria para continuar". |
+| 27/10/2026 | Health check | `GET /health` verifica también la base de datos y responde `{"status":"ok","database":"ok"}` (o `503` si la base no responde). |
+| 27/10/2026 | Credenciales de la base de datos | Se elimina `DATABASE_PASSWORD`: la conexión usa solo `DATABASE_URL` con la **URL completa**. En el primer sprint se define en `.env` (desarrollo local); en Producción es un secreto de Secret Manager. |
+| 27/10/2026 | `whatsapp_messages.to_phone` | Se amplía de `varchar(20)` a `varchar(30)`: el formato `whatsapp:+51XXXXXXXXX` ocupa 21 caracteres. |
+| 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |
