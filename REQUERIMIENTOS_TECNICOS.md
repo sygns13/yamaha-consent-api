@@ -305,12 +305,15 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 - La configuración se carga con `pydantic-settings` (sección 9).
 - **API Key** para los endpoints de KIZUNA:
-  - Header: `X-API-Key` (nombre configurable con `API_KEY_HEADER`).
+  - Header: `X-API-Key` (nombre configurable con `API_KEY_HEADER`; el nombre del header no distingue mayúsculas, como en todo HTTP).
   - `API_KEY_ENABLED=true|false`. Con `false` **no se valida** (pruebas locales o con Postman). Al arrancar, si está en `false` se emite un log `WARNING`.
-  - Comparación en tiempo constante (`secrets.compare_digest`).
-  - Sin clave o con clave inválida → `401`.
+  - **Con `API_KEY_ENABLED=true` y `API_KEY` vacía (o solo espacios), la aplicación no arranca:** lanza una excepción (`InsecureConfigurationError`) y registra un log `CRITICAL`. En Cloud Run la revisión no queda activa y el despliegue falla. El chequeo se hace al arrancar la API, no al cargar la configuración, para no bloquear las migraciones de Alembic.
+  - Comparación **exacta** y en tiempo constante (`secrets.compare_digest`, sobre bytes UTF-8): no se recortan espacios ni se ignoran mayúsculas en el valor.
+  - Sin clave → `401 {"detail": "Falta la API Key"}`. Con clave inválida → `401 {"detail": "API Key inválida"}`.
+  - Los rechazos se registran en el log con el motivo y la ruta, **nunca** con la clave recibida ni la IP.
+  - La API Key se documenta en OpenAPI (esquema `ApiKey`, botón *Authorize* de Swagger).
 - Los endpoints públicos (`/api/v1/public/*`) **no** usan API Key: los protege el token del enlace.
-- CORS: solo los orígenes de `CORS_ALLOWED_ORIGINS` (dominio de la landing).
+- CORS: solo los orígenes de `CORS_ALLOWED_ORIGINS` (dominio de la landing). Se permiten únicamente `GET` y `POST` con el header `Content-Type`, sin credenciales (cookies), y se expone `X-Request-ID`. El header de la API Key **no** se permite desde el navegador: KIZUNA llama de servidor a servidor y no necesita CORS.
 
 ### 2.2 Normalización y validación de entrada
 
@@ -642,7 +645,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | `DATABASE_URL` | `postgresql+asyncpg://user:pass@host:5432/consents_db` | **URL completa, incluida la contraseña** (no hay una variable `DATABASE_PASSWORD` aparte). Es un secreto. En local se define en `.env`; en Cloud Run se monta desde Secret Manager y usa el socket de Cloud SQL (`postgresql+asyncpg://user:pass@/consents_db?host=/cloudsql/<INSTANCE>`) |
 | `API_KEY_ENABLED` | `true` | `false` desactiva la validación (pruebas locales) |
 | `API_KEY_HEADER` | `X-API-Key` | |
-| `API_KEY` | *(secreto)* | |
+| `API_KEY` | *(secreto)* | Obligatoria si `API_KEY_ENABLED=true`: si está vacía, la aplicación no arranca |
 | `CORS_ALLOWED_ORIGINS` | `https://consentimiento.dominio.com` | Lista separada por comas |
 | `LINK_TTL_HOURS` | `168` | Vigencia del enlace en **horas** (1 semana) |
 | `LANDING_BASE_URL` | `https://consentimiento.dominio.com` | Base del enlace enviado por WhatsApp |
@@ -720,4 +723,7 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | `whatsapp_messages.to_phone` | Se amplía de `varchar(20)` a `varchar(30)`: el formato `whatsapp:+51XXXXXXXXX` ocupa 21 caracteres. |
 | 27/10/2026 | Documentos alfanuméricos | En CE, PASAPORTE y OTROS, *alfanumérico* incluye la letra **Ñ** (A–Z, Ñ, 0–9; sin tildes). |
 | 27/10/2026 | Errores de validación | Todos los mensajes del `422` se devuelven en español (también los de Pydantic) y sin el valor recibido. |
+| 27/10/2026 | API Key sin configurar | Con `API_KEY_ENABLED=true` y `API_KEY` vacía, la aplicación **no arranca** (excepción al iniciar) y el despliegue falla. |
+| 27/10/2026 | Respuestas 401 | Mensajes distintos: `"Falta la API Key"` (sin header) y `"API Key inválida"` (clave incorrecta). |
+| 27/10/2026 | Comparación de la API Key | Exacta: no se recortan espacios ni se ignoran mayúsculas. |
 | 27/10/2026 | Entorno local | `docker compose up` levanta PostgreSQL y el mock de KIZUNA; la API corre en el host con `uv`. El perfil `api` del compose permite levantarla también en contenedor. |

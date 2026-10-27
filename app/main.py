@@ -1,5 +1,3 @@
-import logging
-
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
@@ -7,10 +5,13 @@ from app.api.v1 import health
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
+from app.core.security import add_cors, check_security_settings
 from app.core.validation_errors import request_validation_exception_handler
 
 settings = get_settings()
 configure_logging(settings.log_level)
+# Falla al arrancar si la configuración de seguridad es inválida (antes de crear la app).
+check_security_settings(settings)
 
 app = FastAPI(
     title="Yamaha Consent API",
@@ -20,10 +21,10 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
+# El último middleware agregado es el más externo: RequestIdMiddleware envuelve a CORS y registra también los
+# preflight (OPTIONS).
+add_cors(app, settings)
 app.add_middleware(RequestIdMiddleware)
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
 app.include_router(health.router)
-
-if not settings.api_key_enabled:
-    logging.getLogger(__name__).warning("API_KEY_ENABLED=false: la validación de API Key está DESACTIVADA")
