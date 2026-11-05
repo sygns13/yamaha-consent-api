@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     phone_country_prefix: str = "51"
 
     # --- Notificación a KIZUNA ---
-    # TODO(PENDIENTE-13): URL, autenticación y contrato reales del callback.
+    # TODO(PENDIENTE-13): URL, autenticación y respuesta esperada del callback real (el payload ya está definido).
     kizuna_callback_enabled: bool = False
     kizuna_callback_url: str = "http://kizuna-mock:8081/kizuna/consent-result"
     kizuna_callback_auth_header: str = ""
