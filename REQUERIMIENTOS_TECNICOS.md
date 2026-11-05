@@ -702,7 +702,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 1. `docker build --platform linux/amd64` y `docker push` de la imagen a Artifact Registry (o `gcloud builds submit`).
 2. Ejecutar migraciones **antes** del deploy: Cloud SQL Auth Proxy local + `alembic upgrade head` con el usuario `consent_owner`.
 3. `gcloud run deploy consent-api --image ... --region <REGION> --service-account consent-api-sa --min-instances=1 --no-cpu-throttling --add-cloudsql-instances <INSTANCE> --allow-unauthenticated --env-vars-file deploy/cloudrun.env.yaml --set-secrets ...`
-4. Configurar en Twilio el `status_callback` con la URL de Cloud Run.
+4. Asignar a `TWILIO_STATUS_CALLBACK_URL` la URL de Cloud Run (`https://<servicio>/api/v1/webhooks/twilio/status`) y volver a desplegar. No se configura nada en la consola de Twilio: la API envía `status_callback` en cada mensaje y valida la firma contra esa URL.
 5. Mantener `KIZUNA_CALLBACK_ENABLED=false` hasta tener el endpoint real de KIZUNA y su contrato confirmado.
 6. Landing: `npm run build` con las variables `PUBLIC_*` de Producción y `firebase deploy --only hosting`.
 7. En Firebase Hosting, agregar el dominio personalizado, crear en Hostinger los registros DNS (TXT de verificación y A) que indique Firebase y esperar a que el SSL quede activo.

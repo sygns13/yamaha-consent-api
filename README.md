@@ -172,20 +172,33 @@ ALTER DEFAULT PRIVILEGES FOR ROLE consent_owner IN SCHEMA public
 ```
 
 **Secretos** en Secret Manager. Se cargan desde la entrada estándar para que no queden en el historial de la shell ni
-en un archivo:
+en un archivo, y **sin salto de línea final**: la API Key se compara de forma exacta y un `\n` al final la invalida.
+Por eso se lee el valor con `read -rs` (no se muestra) y se envía con `printf '%s'` (no pegar el valor y Ctrl+D, que
+agrega el salto de línea):
 
 ```bash
 # DATABASE_URL: URL completa con el socket de Cloud SQL (caracteres especiales de la clave codificados en URL: @ → %40)
 #   postgresql+asyncpg://consent_app:<CLAVE_APP>@/consents_db?host=/cloudsql/<PROJECT_ID>:<REGION>:<INSTANCE>
-gcloud secrets create DATABASE_URL --replication-policy=automatic --data-file=-     # pegar la URL, Enter y Ctrl+D
-gcloud secrets create API_KEY --replication-policy=automatic --data-file=-          # la clave que usará KIZUNA
-gcloud secrets create TWILIO_AUTH_TOKEN --replication-policy=automatic --data-file=-
+read -rs CLAVE_APP
+printf '%s' "postgresql+asyncpg://consent_app:$CLAVE_APP@/consents_db?host=/cloudsql/$INSTANCE_CONNECTION" \
+  | gcloud secrets create DATABASE_URL --replication-policy=automatic --data-file=-
+
+# API_KEY: la que usará KIZUNA (se entrega por un canal seguro)
+API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+printf '%s' "$API_KEY" | gcloud secrets create API_KEY --replication-policy=automatic --data-file=-
+
+read -rs TWILIO_AUTH_TOKEN
+printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets create TWILIO_AUTH_TOKEN --replication-policy=automatic --data-file=-
+
 # Solo cuando se conozca la autenticación de KIZUNA (PENDIENTE-13):
-gcloud secrets create KIZUNA_CALLBACK_AUTH_VALUE --replication-policy=automatic --data-file=-
+read -rs KZ_AUTH
+printf '%s' "$KZ_AUTH" | gcloud secrets create KIZUNA_CALLBACK_AUTH_VALUE --replication-policy=automatic --data-file=-
+
+unset CLAVE_APP TWILIO_AUTH_TOKEN KZ_AUTH
 ```
 
-Para cambiar un secreto, se agrega una versión con `gcloud secrets versions add <NOMBRE> --data-file=-` y se vuelve a
-desplegar (paso 4).
+Para cambiar un secreto, se agrega una versión con `printf '%s' "<nuevo>" | gcloud secrets versions add <NOMBRE>
+--data-file=-` y se vuelve a desplegar (paso 4).
 
 ### 2. Construir y subir la imagen a Artifact Registry
 
@@ -255,10 +268,13 @@ gcloud run services logs read consent-api --region=$REGION --limit=50
 En los logs del arranque deben aparecer solo los `WARNING` esperados, por ejemplo `KIZUNA_CALLBACK_ENABLED=false`, y
 ningún `CRITICAL`.
 
-En el **primer** deploy, la URL de Cloud Run recién se conoce aquí:
+En el **primer** deploy, la URL de Cloud Run recién se conoce aquí (desplegar antes con
+`TWILIO_STATUS_CALLBACK_URL: ""`, que solo genera un `WARNING`):
 1. Poner `TWILIO_STATUS_CALLBACK_URL=$URL/api/v1/webhooks/twilio/status` en `deploy/cloudrun.env.yaml`.
 2. Repetir el paso 4.
-3. Configurar esa misma URL como `status_callback` en Twilio.
+
+No hace falta configurar nada en la consola de Twilio: la API envía esa URL como `status_callback` en cada mensaje, y
+Twilio firma esa URL exacta, que es contra la que se valida `X-Twilio-Signature`.
 
 ### 6. Volver a la versión anterior
 
