@@ -94,10 +94,12 @@ def test_missing_field() -> None:
 
 def test_own_value_error_drops_english_prefix() -> None:
     with pytest.raises(ValidationError) as exc:
-        ConsentListQuery.model_validate({"document_type": "DNI", "document_number": "1"})
+        ConsentListQuery.model_validate({"customerId": "1.2"})
     (error,) = exc.value.errors()
     assert error["msg"].startswith("Value error, ")
-    assert translate_message(error) == "El DNI debe tener exactamente 8 dígitos"
+    assert translate_message(error) == (
+        "El identificador del cliente debe ser alfanumérico (letras, Ñ y dígitos), de máximo 20 caracteres"
+    )
 
 
 def test_unknown_type_falls_back_to_spanish() -> None:
@@ -138,44 +140,48 @@ async def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
 
 
 BODY = {
-    "transaction_id": "TRX-1",
-    "document_type": "DNI",
-    "document_number": "1234567",
-    "full_name": "JUAN PÉREZ SECRETO",
-    "phone": "98765",
-    "dealer": "DEALER-001",
+    "IdentifierId": "TRX-1",
+    "customerId": "1234.567",
+    "customerName": "JUAN PÉREZ SECRETO",
+    "customerPhone": "98765",
+    "dealerCode": "DEALER-001",
 }
 
 
 async def test_422_response_is_in_spanish_and_has_no_input(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="app.core.validation_errors"):
-        response = await request("POST", "/consents", json={**BODY, "full_name": ""})
+        response = await request("POST", "/consents", json={"_request": {**BODY, "customerName": ""}})
 
     assert response.status_code == 422
     assert response.json() == {
         "detail": [
             {
                 "type": "value_error",
-                "loc": ["body", "document_number"],
-                "msg": "El DNI debe tener exactamente 8 dígitos",
+                "loc": ["body", "_request", "customerId"],
+                "msg": "El identificador del cliente debe ser alfanumérico (letras, Ñ y dígitos), de máximo 20 "
+                "caracteres",
             },
-            {"type": "value_error", "loc": ["body", "full_name"], "msg": "El nombre no puede estar vacío"},
             {
                 "type": "value_error",
-                "loc": ["body", "phone"],
+                "loc": ["body", "_request", "customerName"],
+                "msg": "El nombre no puede estar vacío",
+            },
+            {
+                "type": "value_error",
+                "loc": ["body", "_request", "customerPhone"],
                 "msg": "El teléfono debe tener exactamente 9 dígitos (formato XXXXXXXXX)",
             },
         ]
     }
     # Ni la respuesta ni el log devuelven lo que se envió.
-    for sent in ("1234567", "98765"):
+    for sent in ("1234.567", "98765"):
         assert sent not in response.text
         assert sent not in caplog.text
     record = next(r for r in caplog.records if r.name == "app.core.validation_errors")
     assert record.errors == [
-        {"loc": ["body", "document_number"], "type": "value_error"},
-        {"loc": ["body", "full_name"], "type": "value_error"},
-        {"loc": ["body", "phone"], "type": "value_error"},
+        {"loc": ["body", "_request", "customerId"], "type": "value_error"},
+        {"loc": ["body", "_request", "customerName"], "type": "value_error"},
+        {"loc": ["body", "_request", "customerPhone"], "type": "value_error"},
     ]
 
 
@@ -209,15 +215,17 @@ async def test_422_when_json_is_invalid() -> None:
 
 
 async def test_422_on_query_params() -> None:
-    response = await request("GET", "/consents", params={"document_type": "dni"})
+    response = await request("GET", "/consents", params={"dealerCode": "D"})
     assert response.json()["detail"] == [
-        {"type": "missing", "loc": ["query", "document_number"], "msg": "Campo obligatorio"}
+        {"type": "missing", "loc": ["query", "customerId"], "msg": "Campo obligatorio"}
     ]
 
 
 async def test_valid_request_is_not_affected() -> None:
     response = await request(
-        "POST", "/consents", json={**BODY, "document_number": "12345678", "phone": "987654321"}
+        "POST",
+        "/consents",
+        json={"_request": {**BODY, "customerId": "12345678", "customerPhone": "987654321"}},
     )
     assert response.status_code == 200
 

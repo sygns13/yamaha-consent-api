@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f1c2a7e-3b9d-4c55-9a0e-2d8f5b7c1e40",
     "name": "Yamaha Consent API",
-    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: lo completa `Registrar cliente` con el ID que creó.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
+    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -18,9 +18,8 @@
     { "key": "api_key", "value": "", "type": "string" },
     { "key": "token", "value": "", "type": "string" },
     { "key": "transaction_id", "value": "TRX-000123", "type": "string" },
-    { "key": "document_type", "value": "DNI", "type": "string" },
-    { "key": "document_number", "value": "12345678", "type": "string" },
-    { "key": "dealer", "value": "DEALER-001", "type": "string" },
+    { "key": "customer_id", "value": "12345678", "type": "string" },
+    { "key": "dealer_code", "value": "DEALER-001", "type": "string" },
     { "key": "kizuna_mock_url", "value": "http://localhost:8081", "type": "string" },
     { "key": "twilio_auth_token", "value": "", "type": "string" },
     { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" }
@@ -57,7 +56,7 @@
       "description": "Endpoints que consume KIZUNA. Requieren `X-API-Key: {{api_key}}` (heredado de la colección).",
       "item": [
         {
-          "name": "Registrar cliente (nuevo transaction_id)",
+          "name": "Registrar cliente (nuevo IdentifierId)",
           "event": [
             {
               "listen": "test",
@@ -66,9 +65,9 @@
                 "exec": [
                   "pm.test('201 CREATED o 200 UPDATED', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
                   "const body = pm.response.json();",
-                  "if (body.transaction_id) {",
-                  "  pm.collectionVariables.set('transaction_id', body.transaction_id);",
-                  "  console.log('transaction_id =', body.transaction_id, '→ token: uv run python -m scripts.issue_local_link ' + body.affected_transaction_id);",
+                  "if (body.IdentifierId) {",
+                  "  pm.collectionVariables.set('transaction_id', body.IdentifierId);",
+                  "  console.log('IdentifierId =', body.IdentifierId, '→ token: uv run python -m scripts.issue_local_link ' + body.affectedIdentifierId);",
                   "}"
                 ]
               }
@@ -79,11 +78,11 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"transaction_id\": \"TRX-{{$timestamp}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan  pérez   gómez\",\n  \"phone\": \"+51 987 654 321\",\n  \"dealer\": \"{{dealer}}\",\n  \"additional_info\": {}\n}",
+              "raw": "{\n  \"_request\": {\n    \"IdentifierId\": \"TRX-{{$timestamp}}\",\n    \"customerId\": \"{{customer_id}}\",\n    \"customerName\": \"juan  pérez   gómez\",\n    \"customerPhone\": \"+51 987 654 321\",\n    \"customerEmail\": \"juan.perez@mail.com\",\n    \"dealerName\": \"ABC Motors\",\n    \"dealerCode\": \"{{dealer_code}}\",\n    \"requestDateTime\": \"2026-11-02T10:35:00-05:00\",\n    \"additionalInfo\": {}\n  }\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
-            "description": "Genera un `transaction_id` nuevo en cada envío (`TRX-<timestamp>`) y lo guarda en la variable `transaction_id`.\n\n- Sin registro activo del documento + Dealer → `201 CREATED`: registro, enlace y WhatsApp (RN-03, RN-05).\n- Con registro activo → `200 UPDATED` (RN-04): se actualizan los datos del cliente, `affected_transaction_id` es el registro principal y el ID nuevo queda como copia vinculada. Sin WhatsApp."
+            "description": "Contrato de KIZUNA: los datos van dentro de `_request`. Genera un `IdentifierId` nuevo en cada envío (`TRX-<timestamp>`) y lo guarda en la variable `transaction_id`. `customerEmail`, `dealerName`, `requestDateTime` (cualquier offset; sin él, la hora del sistema) y `additionalInfo` son opcionales; un correo inválido se guarda como null sin rechazar.\n\n- Sin registro activo del customerId + dealerCode → `201 CREATED`: registro, enlace y WhatsApp (RN-03, RN-05).\n- Con registro activo → `200 UPDATED` (RN-04): se actualizan los datos del cliente, `affectedIdentifierId` es el registro principal y el ID nuevo queda como copia vinculada. Sin WhatsApp."
           }
         },
         {
@@ -93,11 +92,11 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan pérez gómez\",\n  \"phone\": \"911222333\",\n  \"dealer\": \"{{dealer}}\"\n}",
+              "raw": "{\n  \"_request\": {\n    \"IdentifierId\": \"{{transaction_id}}\",\n    \"customerId\": \"{{customer_id}}\",\n    \"customerName\": \"juan pérez gómez\",\n    \"customerPhone\": \"911222333\",\n    \"dealerCode\": \"{{dealer_code}}\"\n  }\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
-            "description": "Mismo `transaction_id`: `200 UPDATED` (datos del cliente actualizados, sin WhatsApp). Si la transacción fue rechazada (NO_ACEPTADO) → `409`."
+            "description": "Mismo `IdentifierId`: `200 UPDATED` (datos del cliente actualizados, sin WhatsApp). Si la transacción fue rechazada (NO_ACEPTADO) → `409`."
           }
         },
         {
@@ -107,11 +106,11 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"transaction_id\": \"TRX-D2-{{$timestamp}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"full_name\": \"juan pérez gómez\",\n  \"phone\": \"987654321\",\n  \"dealer\": \"DEALER-002\"\n}",
+              "raw": "{\n  \"_request\": {\n    \"IdentifierId\": \"TRX-D2-{{$timestamp}}\",\n    \"customerId\": \"{{customer_id}}\",\n    \"customerName\": \"juan pérez gómez\",\n    \"customerPhone\": \"987654321\",\n    \"dealerName\": \"Otro Dealer\",\n    \"dealerCode\": \"DEALER-002\"\n  }\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
-            "description": "Mismo documento con otro Dealer: `201 CREATED`, registro, enlace y WhatsApp nuevos."
+            "description": "Mismo customerId con otro dealerCode: `201 CREATED`, registro, enlace y WhatsApp nuevos."
           }
         },
         {
@@ -121,7 +120,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"transaction_id\": \"TRX-INVALIDO\",\n  \"document_type\": \"DNI\",\n  \"document_number\": \"1234\",\n  \"full_name\": \"juan pérez\",\n  \"phone\": \"12345\",\n  \"dealer\": \"DEALER-001\"\n}",
+              "raw": "{\n  \"_request\": {\n    \"IdentifierId\": \"TRX-INVALIDO\",\n    \"customerId\": \"12.34\",\n    \"customerName\": \"juan pérez\",\n    \"customerPhone\": \"12345\",\n    \"dealerCode\": \"DEALER-001\"\n  }\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{base_url}}/api/v1/consents", "host": ["{{base_url}}"], "path": ["api", "v1", "consents"] },
@@ -129,7 +128,7 @@
           }
         },
         {
-          "name": "Consultar por transaction_id",
+          "name": "Consultar por IdentifierId",
           "request": {
             "method": "GET",
             "url": {
@@ -141,20 +140,19 @@
           }
         },
         {
-          "name": "Listar por documento y Dealer",
+          "name": "Listar por customerId y dealerCode",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/consents?document_type={{document_type}}&document_number={{document_number}}&dealer={{dealer}}",
+              "raw": "{{base_url}}/api/v1/consents?customerId={{customer_id}}&dealerCode={{dealer_code}}",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "consents"],
               "query": [
-                { "key": "document_type", "value": "{{document_type}}" },
-                { "key": "document_number", "value": "{{document_number}}" },
-                { "key": "dealer", "value": "{{dealer}}", "description": "Opcional" }
+                { "key": "customerId", "value": "{{customer_id}}" },
+                { "key": "dealerCode", "value": "{{dealer_code}}", "description": "Opcional" }
               ]
             },
-            "description": "Registros del documento (y Dealer), del más reciente al más antiguo. Incluye los rechazados y las copias vinculadas. Sin resultados → `200 []`."
+            "description": "Registros del customerId (y dealerCode), del más reciente al más antiguo. Incluye los rechazados y las copias vinculadas. Sin resultados → `200 []`."
           }
         }
       ]
@@ -173,7 +171,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('link_status VALID, EXPIRED o USED', () => pm.expect(pm.response.json().link_status).to.be.oneOf(['VALID', 'EXPIRED', 'USED']));"
+                  "pm.test('linkStatus VALID, EXPIRED o USED', () => pm.expect(pm.response.json().linkStatus).to.be.oneOf(['VALID', 'EXPIRED', 'USED']));"
                 ]
               }
             }
@@ -185,7 +183,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "public", "consent-links", "{{token}}"]
             },
-            "description": "`200 {\"link_status\", \"privacy_policy_url\", \"dealer_display_name\"}`. Token inexistente → `404`."
+            "description": "`200 {\"linkStatus\", \"privacyPolicyUrl\", \"dealerName\"}`. Token inexistente → `404`."
           }
         },
         {
@@ -195,7 +193,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"personal_data\": true,\n  \"marketing_yamaha\": false,\n  \"marketing_dealer\": true\n}",
+              "raw": "{\n  \"personalDataConsent\": true,\n  \"marketingConsentYMDP\": false,\n  \"marketingConsentDEALER\": true\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -203,7 +201,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "public", "consent-links", "{{token}}", "submit"]
             },
-            "description": "`200 {\"status\":\"ACEPTADO\"}`. Un enlace vencido o ya usado → `410` con `link_status`. Dispara el callback a KIZUNA (uno por cada ID de transacción)."
+            "description": "`200 {\"status\":\"ACEPTADO\"}`. Un enlace vencido o ya usado → `410` con `linkStatus`. Un check en null se registra como false. Dispara el callback a KIZUNA (uno por cada ID de transacción)."
           }
         },
         {
@@ -213,7 +211,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"personal_data\": false,\n  \"marketing_yamaha\": false,\n  \"marketing_dealer\": false\n}",
+              "raw": "{\n  \"personalDataConsent\": false,\n  \"marketingConsentYMDP\": false,\n  \"marketingConsentDEALER\": false\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -318,7 +316,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"document_type\": \"{{document_type}}\",\n  \"document_number\": \"{{document_number}}\",\n  \"dealer\": \"{{dealer}}\",\n  \"status\": \"ACEPTADO\",\n  \"consents\": {\n    \"personal_data\": true,\n    \"marketing_yamaha\": false,\n    \"marketing_dealer\": true\n  },\n  \"responded_at\": \"2026-11-05T15:20:11Z\"\n}",
+              "raw": "{\n  \"IdentifierId\": \"{{transaction_id}}\",\n  \"customerId\": \"{{customer_id}}\",\n  \"dealerCode\": \"{{dealer_code}}\",\n  \"consentDateTime\": \"2026-11-02T13:35:00-05:00\",\n  \"personalDataConsent\": true,\n  \"marketingConsentYMDP\": false,\n  \"marketingConsentDEALER\": false\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {

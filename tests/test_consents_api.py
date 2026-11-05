@@ -5,7 +5,7 @@ Corre contra la base de pruebas (ver conftest.py) con un WhatsAppSender de prueb
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -26,19 +26,26 @@ from tests.conftest import RecordingWhatsAppSender
 from tests.db_helpers import Sessions, accept, all_rows, count, get_consent, reject
 
 URL = "/api/v1/consents"
+# Contenido de `_request`, con los nombres de KIZUNA.
 BODY: dict[str, Any] = {
-    "transaction_id": "TRX-000123",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan  pérez   gómez",
-    "phone": "+51 987 654 321",
-    "dealer": "DEALER-001",
-    "additional_info": {"canal": "tienda"},
+    "IdentifierId": "TRX-000123",
+    "customerId": "12345678",
+    "customerName": "juan  pérez   gómez",
+    "customerPhone": "+51 987 654 321",
+    "customerEmail": " Juan.Perez@Mail.com ",
+    "dealerName": "  ABC   Motors ",
+    "dealerCode": "DEALER-001",
+    "requestDateTime": "2026-11-02T10:35:00-05:00",
+    "additionalInfo": {"canal": "tienda"},
 }
 
 
+def envelope(**overrides: Any) -> dict[str, Any]:
+    return {"_request": {**BODY, **overrides}}
+
+
 async def post(client: httpx.AsyncClient, **overrides: Any) -> httpx.Response:
-    return await client.post(URL, json={**BODY, **overrides})
+    return await client.post(URL, json=envelope(**overrides))
 
 
 # --- Creación (201) ---
@@ -48,11 +55,11 @@ async def test_create_returns_201(api_client: httpx.AsyncClient) -> None:
     response = await post(api_client)
     assert response.status_code == 201
     assert response.json() == {
-        "transaction_id": "TRX-000123",
+        "IdentifierId": "TRX-000123",
         "result": "CREATED",
-        "affected_transaction_id": "TRX-000123",
+        "affectedIdentifierId": "TRX-000123",
         "status": "PENDIENTE",
-        "whatsapp": {"status": "queued", "error_code": None},
+        "whatsapp": {"status": "queued", "errorCode": None},
     }
 
 
@@ -63,11 +70,13 @@ async def test_create_stores_normalized_record_request_link_and_message(
 
     consent = await get_consent(session_factory, "TRX-000123")
     assert consent is not None
-    assert (consent.document_type, consent.document_number, consent.dealer) == (
-        "DNI",
+    assert (consent.customer_id, consent.dealer_code, consent.dealer_name) == (
         "12345678",
         "DEALER-001",
+        "ABC Motors",
     )
+    assert consent.email == "juan.perez@mail.com"
+    assert consent.requested_at == datetime(2026, 11, 2, 15, 35, tzinfo=UTC)
     assert consent.full_name == "JUAN PÉREZ GÓMEZ"
     assert consent.phone == "987654321"
     assert consent.additional_info == {"canal": "tienda"}
@@ -127,7 +136,7 @@ async def test_each_link_gets_a_different_token(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-2", dealer="DEALER-002")
+    await post(api_client, IdentifierId="TRX-2", dealerCode="DEALER-002")
     tokens = {call["token"] for call in whatsapp_sender.calls}
     hashes = {link.token_hash for link in await all_rows(session_factory, ConsentLink)}
     assert len(tokens) == 2
@@ -142,14 +151,17 @@ async def test_rn04_same_transaction_id_updates_customer_data(
 ) -> None:
     await post(api_client)
     response = await post(
-        api_client, full_name="juan carlos pérez", phone="999 888 777", additional_info={"canal": "web"}
+        api_client,
+        customerName="juan carlos pérez",
+        customerPhone="999 888 777",
+        additionalInfo={"canal": "web"},
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "transaction_id": "TRX-000123",
+        "IdentifierId": "TRX-000123",
         "result": "UPDATED",
-        "affected_transaction_id": "TRX-000123",
+        "affectedIdentifierId": "TRX-000123",
         "status": "PENDIENTE",
         "whatsapp": None,
     }
@@ -169,16 +181,16 @@ async def test_rn04_same_transaction_id_updates_customer_data(
     assert len(whatsapp_sender.calls) == 1
 
 
-async def test_rn04_same_transaction_id_keeps_document_and_dealer_of_the_record(
+async def test_rn04_same_transaction_id_keeps_customer_id_and_dealer_code_of_the_record(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
     response = await post(
-        api_client, document_number="87654321", dealer="DEALER-999", full_name="otro nombre"
+        api_client, customerId="87654321", dealerCode="DEALER-999", customerName="otro nombre"
     )
     assert response.status_code == 200
     consent = await get_consent(session_factory, "TRX-000123")
-    assert (consent.document_number, consent.dealer) == ("12345678", "DEALER-001")
+    assert (consent.customer_id, consent.dealer_code) == ("12345678", "DEALER-001")
     assert consent.full_name == "OTRO NOMBRE"
     assert await count(session_factory, Consent) == 1
 
@@ -187,12 +199,12 @@ async def test_rn04_keeps_additional_info_when_not_sent(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    body = {k: v for k, v in BODY.items() if k != "additional_info"}
-    assert (await api_client.post(URL, json=body)).status_code == 200
+    body = {k: v for k, v in BODY.items() if k != "additionalInfo"}
+    assert (await api_client.post(URL, json={"_request": body})).status_code == 200
     assert (await get_consent(session_factory, "TRX-000123")).additional_info == {"canal": "tienda"}
 
     # Si se envía explícitamente null, se reemplaza.
-    await post(api_client, additional_info=None)
+    await post(api_client, additionalInfo=None)
     assert (await get_consent(session_factory, "TRX-000123")).additional_info is None
 
 
@@ -203,13 +215,15 @@ async def test_rn04_new_transaction_id_with_active_record(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     await post(api_client)
-    response = await post(api_client, transaction_id="TRX-000999", full_name="juan pérez", phone="911222333")
+    response = await post(
+        api_client, IdentifierId="TRX-000999", customerName="juan pérez", customerPhone="911222333"
+    )
 
     assert response.status_code == 200
     assert response.json() == {
-        "transaction_id": "TRX-000999",
+        "IdentifierId": "TRX-000999",
         "result": "UPDATED",
-        "affected_transaction_id": "TRX-000123",
+        "affectedIdentifierId": "TRX-000123",
         "status": "PENDIENTE",
         "whatsapp": None,
     }
@@ -223,7 +237,7 @@ async def test_rn04_new_transaction_id_with_active_record(
     copy = await get_consent(session_factory, "TRX-000999")
     assert copy is not None
     assert copy.source_transaction_id == "TRX-000123"
-    assert (copy.document_type, copy.document_number, copy.dealer) == ("DNI", "12345678", "DEALER-001")
+    assert (copy.customer_id, copy.dealer_code, copy.dealer_name) == ("12345678", "DEALER-001", "ABC Motors")
     assert (copy.full_name, copy.phone) == ("JUAN PÉREZ", "911222333")
     assert copy.status == ConsentStatus.PENDIENTE
     assert copy.is_deleted == 0
@@ -253,10 +267,10 @@ async def test_rn04_copy_of_an_accepted_record_gets_the_answers(
     await post(api_client)
     await accept(session_factory, "TRX-000123")
 
-    response = await post(api_client, transaction_id="TRX-000999")
+    response = await post(api_client, IdentifierId="TRX-000999")
     assert response.status_code == 200
     assert response.json()["status"] == "ACEPTADO"
-    assert response.json()["affected_transaction_id"] == "TRX-000123"
+    assert response.json()["affectedIdentifierId"] == "TRX-000123"
 
     primary = await get_consent(session_factory, "TRX-000123")
     copy = await get_consent(session_factory, "TRX-000999")
@@ -287,9 +301,9 @@ async def test_rn04_several_new_ids_link_to_the_primary_not_to_a_copy(
 ) -> None:
     await post(api_client)
     for tid in ("TRX-A", "TRX-B", "TRX-C"):
-        response = await post(api_client, transaction_id=tid)
+        response = await post(api_client, IdentifierId=tid)
         assert response.status_code == 200
-        assert response.json()["affected_transaction_id"] == "TRX-000123"
+        assert response.json()["affectedIdentifierId"] == "TRX-000123"
 
     for tid in ("TRX-A", "TRX-B", "TRX-C"):
         assert (await get_consent(session_factory, tid)).source_transaction_id == "TRX-000123"
@@ -301,11 +315,11 @@ async def test_rn04_resending_a_linked_copy_updates_only_that_copy(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-000999")
+    await post(api_client, IdentifierId="TRX-000999")
 
-    response = await post(api_client, transaction_id="TRX-000999", full_name="nombre corregido")
+    response = await post(api_client, IdentifierId="TRX-000999", customerName="nombre corregido")
     assert response.status_code == 200
-    assert response.json()["affected_transaction_id"] == "TRX-000999"
+    assert response.json()["affectedIdentifierId"] == "TRX-000999"
     assert (await get_consent(session_factory, "TRX-000999")).full_name == "NOMBRE CORREGIDO"
     assert (await get_consent(session_factory, "TRX-000123")).full_name == "JUAN PÉREZ GÓMEZ"
     assert await count(session_factory, Consent) == 2
@@ -316,12 +330,12 @@ async def test_rn05_after_rejection_ignores_old_rejected_copies(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-COPY")
+    await post(api_client, IdentifierId="TRX-COPY")
     # M4 rechaza el principal y propaga el rechazo a la copia.
     await reject(session_factory, "TRX-000123")
     await reject(session_factory, "TRX-COPY")
 
-    response = await post(api_client, transaction_id="TRX-NEW")
+    response = await post(api_client, IdentifierId="TRX-NEW")
     assert response.status_code == 201
     assert (await get_consent(session_factory, "TRX-NEW")).source_transaction_id is None
     assert len(whatsapp_sender.calls) == 2
@@ -333,60 +347,130 @@ async def test_active_copy_does_not_count_as_the_active_record(
     # Datos de borde: el principal fue rechazado pero su copia quedó activa (no debería pasar con M4).
     # Igual se crea un principal nuevo con su enlace: el cliente necesita un enlace para responder.
     await post(api_client)
-    await post(api_client, transaction_id="TRX-COPY")
+    await post(api_client, IdentifierId="TRX-COPY")
     await reject(session_factory, "TRX-000123")
 
-    response = await post(api_client, transaction_id="TRX-NEW")
+    response = await post(api_client, IdentifierId="TRX-NEW")
     assert response.status_code == 201
     assert len(whatsapp_sender.calls) == 2
 
 
-async def test_rn04_document_is_matched_after_normalization(
+async def test_rn04_customer_id_is_matched_after_normalization(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
     response = await post(
         api_client,
-        transaction_id="TRX-2",
-        document_type="dni",
-        document_number="1234-5678",
-        dealer=" DEALER-001 ",
+        IdentifierId="TRX-2",
+        customerId="1234-5678",
+        dealerCode=" DEALER-001 ",
     )
     assert response.status_code == 200
-    assert response.json()["affected_transaction_id"] == "TRX-000123"
+    assert response.json()["affectedIdentifierId"] == "TRX-000123"
     copy = await get_consent(session_factory, "TRX-2")
-    assert (copy.document_number, copy.dealer, copy.source_transaction_id) == (
+    assert (copy.customer_id, copy.dealer_code, copy.source_transaction_id) == (
         "12345678",
         "DEALER-001",
         "TRX-000123",
     )
 
 
-# --- RN-03: mismo documento con otro Dealer (201) ---
+# --- RN-03: mismo cliente con otro Dealer (201) ---
 
 
-async def test_rn03_same_document_other_dealer_creates_new_record(
+async def test_rn03_same_customer_other_dealer_creates_new_record(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
     await post(api_client)
-    response = await post(api_client, transaction_id="TRX-000124", dealer="DEALER-002")
+    response = await post(api_client, IdentifierId="TRX-000124", dealerCode="DEALER-002")
 
     assert response.status_code == 201
     assert response.json()["result"] == "CREATED"
-    assert response.json()["affected_transaction_id"] == "TRX-000124"
+    assert response.json()["affectedIdentifierId"] == "TRX-000124"
     assert await count(session_factory, Consent) == 2
     assert await count(session_factory, ConsentLink) == 2
     assert await count(session_factory, WhatsappMessage) == 2
     assert [c["transaction_id"] for c in whatsapp_sender.calls] == ["TRX-000123", "TRX-000124"]
 
 
-async def test_same_document_number_with_other_document_type_is_another_customer(
+async def test_document_type_is_no_longer_part_of_the_customer(
+    api_client: httpx.AsyncClient, session_factory: Sessions
+) -> None:
+    # KIZUNA no envía tipo de documento: un campo desconocido se ignora y el customerId identifica al cliente.
+    await post(api_client)
+    response = await post(api_client, IdentifierId="TRX-2", document_type="CE")
+    assert response.status_code == 200
+    assert response.json()["affectedIdentifierId"] == "TRX-000123"
+
+
+async def test_alphanumeric_customer_id_is_accepted_and_uppercased(
+    api_client: httpx.AsyncClient, session_factory: Sessions
+) -> None:
+    response = await post(api_client, customerId="ab-ñ 123x")
+    assert response.status_code == 201
+    assert (await get_consent(session_factory, "TRX-000123")).customer_id == "ABÑ123X"
+
+
+# --- Campos opcionales: nunca rechazan la solicitud ---
+
+
+async def test_optional_fields_can_be_omitted(
+    api_client: httpx.AsyncClient, session_factory: Sessions
+) -> None:
+    body = {k: v for k, v in BODY.items() if k not in {"customerEmail", "dealerName", "requestDateTime"}}
+    before = datetime.now(UTC)
+    response = await api_client.post(URL, json={"_request": body})
+    assert response.status_code == 201
+    consent = await get_consent(session_factory, "TRX-000123")
+    assert (consent.email, consent.dealer_name) == (None, None)
+    # Sin requestDateTime vale la hora del sistema.
+    assert before <= consent.requested_at <= datetime.now(UTC)
+
+
+@pytest.mark.parametrize("email", ["no-es-un-correo", "a@b", "", "   ", 12345, ["x@y.com"]])
+async def test_invalid_email_is_stored_as_null_without_rejecting(
+    api_client: httpx.AsyncClient, session_factory: Sessions, email: Any
+) -> None:
+    response = await post(api_client, customerEmail=email)
+    assert response.status_code == 201
+    assert (await get_consent(session_factory, "TRX-000123")).email is None
+
+
+async def test_dealer_name_is_trimmed_and_cut_to_150_characters(
+    api_client: httpx.AsyncClient, session_factory: Sessions
+) -> None:
+    response = await post(api_client, dealerName="D" * 200)
+    assert response.status_code == 201
+    assert (await get_consent(session_factory, "TRX-000123")).dealer_name == "D" * 150
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-11-02T10:35:00+05:00", datetime(2026, 11, 2, 5, 35, tzinfo=UTC)),
+        ("2026-11-02T10:35:00Z", datetime(2026, 11, 2, 10, 35, tzinfo=UTC)),
+        # Sin offset: hora de Lima (KIZUNA_TIMEZONE).
+        ("2026-11-02T10:35:00", datetime(2026, 11, 2, 15, 35, tzinfo=UTC)),
+    ],
+)
+async def test_request_datetime_accepts_any_offset(
+    api_client: httpx.AsyncClient, session_factory: Sessions, value: str, expected: datetime
+) -> None:
+    assert (await post(api_client, requestDateTime=value)).status_code == 201
+    assert (await get_consent(session_factory, "TRX-000123")).requested_at == expected
+
+
+async def test_rn04_updates_email_and_dealer_name_only_when_sent(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    response = await post(api_client, transaction_id="TRX-2", document_type="CE")
-    assert response.status_code == 201
-    assert await count(session_factory, Consent) == 2
+    await post(api_client, customerEmail="nuevo@mail.com", dealerName="ABC Motors Sur")
+    consent = await get_consent(session_factory, "TRX-000123")
+    assert (consent.email, consent.dealer_name) == ("nuevo@mail.com", "ABC Motors Sur")
+
+    await post(api_client, customerEmail=None, dealerName=None)
+    consent = await get_consent(session_factory, "TRX-000123")
+    assert (consent.email, consent.dealer_name) == ("nuevo@mail.com", "ABC Motors Sur")
 
 
 # --- RN-05: nueva compra tras un rechazo (201) ---
@@ -398,14 +482,14 @@ async def test_rn05_new_transaction_after_rejection_creates_new_record_and_whats
     await post(api_client)
     await reject(session_factory, "TRX-000123")
 
-    response = await post(api_client, transaction_id="TRX-000200")
+    response = await post(api_client, IdentifierId="TRX-000200")
     assert response.status_code == 201
     assert response.json() == {
-        "transaction_id": "TRX-000200",
+        "IdentifierId": "TRX-000200",
         "result": "CREATED",
-        "affected_transaction_id": "TRX-000200",
+        "affectedIdentifierId": "TRX-000200",
         "status": "PENDIENTE",
-        "whatsapp": {"status": "queued", "error_code": None},
+        "whatsapp": {"status": "queued", "errorCode": None},
     }
 
     old = await get_consent(session_factory, "TRX-000123")
@@ -413,7 +497,7 @@ async def test_rn05_new_transaction_after_rejection_creates_new_record_and_whats
     # El registro rechazado no se toca.
     assert (old.is_deleted, old.status, old.full_name) == (1, ConsentStatus.NO_ACEPTADO, None)
     assert (new.is_deleted, new.status, new.full_name) == (0, ConsentStatus.PENDIENTE, "JUAN PÉREZ GÓMEZ")
-    assert (new.document_number, new.dealer) == (old.document_number, old.dealer)
+    assert (new.customer_id, new.dealer_code) == (old.customer_id, old.dealer_code)
 
     links = await all_rows(session_factory, ConsentLink)
     assert [link.transaction_id for link in links] == ["TRX-000123", "TRX-000200"]
@@ -425,11 +509,11 @@ async def test_rn05_then_rn04_updates_the_new_active_record(
 ) -> None:
     await post(api_client)
     await reject(session_factory, "TRX-000123")
-    await post(api_client, transaction_id="TRX-000200")
+    await post(api_client, IdentifierId="TRX-000200")
 
-    response = await post(api_client, transaction_id="TRX-000300")
+    response = await post(api_client, IdentifierId="TRX-000300")
     assert response.status_code == 200
-    assert response.json()["affected_transaction_id"] == "TRX-000200"
+    assert response.json()["affectedIdentifierId"] == "TRX-000200"
 
 
 async def test_resending_rejected_transaction_id_returns_409_without_changes(
@@ -439,13 +523,13 @@ async def test_resending_rejected_transaction_id_returns_409_without_changes(
     await reject(session_factory, "TRX-000123")
     requests_before = await count(session_factory, ConsentRequest)
 
-    response = await post(api_client, full_name="nuevo nombre")
+    response = await post(api_client, customerName="nuevo nombre")
     assert response.status_code == 409
     assert response.json() == {
         "detail": "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato",
-        "transaction_id": "TRX-000123",
+        "IdentifierId": "TRX-000123",
         "status": "NO_ACEPTADO",
-        "is_deleted": 1,
+        "isDeleted": 1,
     }
     consent = await get_consent(session_factory, "TRX-000123")
     assert consent.full_name is None
@@ -466,7 +550,7 @@ async def test_whatsapp_failure_keeps_the_record(
     response = await post(api_client)
 
     assert response.status_code == 201
-    assert response.json()["whatsapp"] == {"status": "failed", "error_code": "63016"}
+    assert response.json()["whatsapp"] == {"status": "failed", "errorCode": "63016"}
     assert await get_consent(session_factory, "TRX-000123") is not None
     (message,) = await all_rows(session_factory, WhatsappMessage)
     assert (message.status, message.error_code, message.error_message) == (
@@ -488,7 +572,7 @@ async def test_unexpected_sender_exception_is_recorded_not_500(
         response = await post(api_client)
 
     assert response.status_code == 201
-    assert response.json()["whatsapp"] == {"status": "failed", "error_code": None}
+    assert response.json()["whatsapp"] == {"status": "failed", "errorCode": None}
     (message,) = await all_rows(session_factory, WhatsappMessage)
     assert message.status == WhatsappStatus.FAILED
     assert message.error_message.startswith("ConnectionError")
@@ -503,18 +587,18 @@ async def test_unexpected_sender_exception_is_recorded_not_500(
 async def test_concurrent_new_transactions_for_same_customer_create_only_one_primary(
     api_client: httpx.AsyncClient, session_factory: Sessions, whatsapp_sender: RecordingWhatsAppSender
 ) -> None:
-    responses = await asyncio.gather(*(post(api_client, transaction_id=f"TRX-C{i}") for i in range(8)))
+    responses = await asyncio.gather(*(post(api_client, IdentifierId=f"TRX-C{i}") for i in range(8)))
 
     codes = sorted(r.status_code for r in responses)
     assert codes == [200] * 7 + [201]
     created = next(r.json() for r in responses if r.status_code == 201)
-    assert {r.json()["affected_transaction_id"] for r in responses} == {created["transaction_id"]}
+    assert {r.json()["affectedIdentifierId"] for r in responses} == {created["IdentifierId"]}
     # Un solo principal con enlace y WhatsApp; los otros 7 IDs son copias vinculadas a él.
     consents = await all_rows(session_factory, Consent)
     assert len(consents) == 8
     primaries = [c for c in consents if c.source_transaction_id is None]
-    assert [p.transaction_id for p in primaries] == [created["transaction_id"]]
-    assert {c.source_transaction_id for c in consents if c not in primaries} == {created["transaction_id"]}
+    assert [p.transaction_id for p in primaries] == [created["IdentifierId"]]
+    assert {c.source_transaction_id for c in consents if c not in primaries} == {created["IdentifierId"]}
     assert await count(session_factory, ConsentLink) == 1
     assert len(whatsapp_sender.calls) == 1
     assert await count(session_factory, ConsentRequest) == 8
@@ -533,7 +617,7 @@ async def test_concurrent_requests_for_different_customers_do_not_block_each_oth
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     responses = await asyncio.gather(
-        *(post(api_client, transaction_id=f"TRX-D{i}", document_number=f"1000000{i}") for i in range(6))
+        *(post(api_client, IdentifierId=f"TRX-D{i}", customerId=f"1000000{i}") for i in range(6))
     )
     assert all(r.status_code == 201 for r in responses)
     assert await count(session_factory, Consent) == 6
@@ -545,12 +629,13 @@ async def test_concurrent_requests_for_different_customers_do_not_block_each_oth
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
-        ({"document_number": "1234567"}, "document_number"),
-        ({"document_type": "LIBRETA"}, "document_type"),
-        ({"phone": "123"}, "phone"),
-        ({"full_name": "   "}, "full_name"),
-        ({"dealer": ""}, "dealer"),
-        ({"transaction_id": "T" * 101}, "transaction_id"),
+        ({"customerId": "12.345"}, "customerId"),
+        ({"customerId": "C" * 21}, "customerId"),
+        ({"customerPhone": "123"}, "customerPhone"),
+        ({"customerName": "   "}, "customerName"),
+        ({"dealerCode": ""}, "dealerCode"),
+        ({"IdentifierId": "T" * 101}, "IdentifierId"),
+        ({"requestDateTime": "ayer"}, "requestDateTime"),
     ],
 )
 async def test_validation_errors_return_422_and_write_nothing(
@@ -562,7 +647,7 @@ async def test_validation_errors_return_422_and_write_nothing(
 ) -> None:
     response = await post(api_client, **overrides)
     assert response.status_code == 422
-    assert [e["loc"] for e in response.json()["detail"]] == [["body", field]]
+    assert [e["loc"] for e in response.json()["detail"]] == [["body", "_request", field]]
     assert await count(session_factory, Consent) == 0
     assert whatsapp_sender.calls == []
 
@@ -573,18 +658,24 @@ async def test_missing_body_returns_422(api_client: httpx.AsyncClient) -> None:
     assert response.json()["detail"][0]["msg"] == "El cuerpo de la petición es obligatorio"
 
 
+async def test_body_without_request_wrapper_returns_422(api_client: httpx.AsyncClient) -> None:
+    response = await api_client.post(URL, json=BODY)
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "_request"]
+
+
 # --- API Key (401) y bypass ---
 
 
 async def test_missing_api_key_returns_401(api_client: httpx.AsyncClient, session_factory: Sessions) -> None:
-    response = await api_client.post(URL, json=BODY, headers={"X-API-Key": ""})
+    response = await api_client.post(URL, json=envelope(), headers={"X-API-Key": ""})
     assert response.status_code == 401
     assert response.json() == {"detail": "Falta la API Key"}
     assert await count(session_factory, Consent) == 0
 
 
 async def test_invalid_api_key_returns_401(api_client: httpx.AsyncClient, session_factory: Sessions) -> None:
-    response = await api_client.post(URL, json=BODY, headers={"X-API-Key": "otra-clave"})
+    response = await api_client.post(URL, json=envelope(), headers={"X-API-Key": "otra-clave"})
     assert response.status_code == 401
     assert response.json() == {"detail": "API Key inválida"}
     assert await count(session_factory, Consent) == 0
@@ -600,7 +691,7 @@ async def test_api_key_bypass_when_disabled(
     api_client: httpx.AsyncClient, session_factory: Sessions, test_settings: Settings
 ) -> None:
     test_settings.api_key_enabled = False
-    response = await api_client.post(URL, json=BODY, headers={"X-API-Key": ""})
+    response = await api_client.post(URL, json=envelope(), headers={"X-API-Key": ""})
     assert response.status_code == 201
     assert await count(session_factory, Consent) == 1
 
@@ -616,11 +707,11 @@ async def test_responses_and_logs_have_no_personal_data(
 ) -> None:
     with caplog.at_level(logging.DEBUG):
         created = await post(api_client)
-        updated = await post(api_client, transaction_id="TRX-2")
+        updated = await post(api_client, IdentifierId="TRX-2")
 
     token = whatsapp_sender.calls[0]["token"]
     for text in (created.text, updated.text, caplog.text):
-        for secret in ("12345678", "987654321", "JUAN", "PÉREZ", token):
+        for secret in ("12345678", "987654321", "JUAN", "PÉREZ", "juan.perez", token):
             assert secret not in text
 
 

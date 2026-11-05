@@ -18,18 +18,17 @@ from tests.db_helpers import Sessions, accept, get_consent
 
 URL = "/api/v1/consents"
 BODY: dict[str, Any] = {
-    "transaction_id": "TRX-1",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan pérez",
-    "phone": "987654321",
-    "dealer": "DEALER-001",
+    "IdentifierId": "TRX-1",
+    "customerId": "12345678",
+    "customerName": "juan pérez",
+    "customerPhone": "987654321",
+    "dealerCode": "DEALER-001",
 }
 RESPONDED_AT = datetime(2026, 11, 5, 15, 20, 11, tzinfo=UTC)
 
 
 async def post(client: httpx.AsyncClient, **overrides: Any) -> httpx.Response:
-    response = await client.post(URL, json={**BODY, **overrides})
+    response = await client.post(URL, json={"_request": {**BODY, **overrides}})
     assert response.status_code in (200, 201), response.text
     return response
 
@@ -49,8 +48,8 @@ def set_answer(
         primary.is_deleted = 1
         primary.deleted_at = RESPONDED_AT
         primary.full_name = None
-        primary.consent_marketing_yamaha = None
-        primary.consent_marketing_dealer = None
+        primary.consent_marketing_yamaha = False
+        primary.consent_marketing_dealer = False
 
 
 async def answer(
@@ -77,8 +76,8 @@ async def test_pending_copies_receive_the_acceptance(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-2")
-    await post(api_client, transaction_id="TRX-3")
+    await post(api_client, IdentifierId="TRX-2")
+    await post(api_client, IdentifierId="TRX-3")
 
     updated = await answer(session_factory, "TRX-1", marketing_yamaha=False, marketing_dealer=True)
     assert updated == ["TRX-2", "TRX-3"]
@@ -100,7 +99,7 @@ async def test_rejection_applies_rn01_to_each_copy(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-2", phone="911222333")
+    await post(api_client, IdentifierId="TRX-2", customerPhone="911222333")
 
     assert await answer(session_factory, "TRX-1", personal_data=False) == ["TRX-2"]
 
@@ -110,11 +109,11 @@ async def test_rejection_applies_rn01_to_each_copy(
     assert copy.deleted_at == RESPONDED_AT
     assert (copy.consent_personal_data, copy.consent_marketing_yamaha, copy.consent_marketing_dealer) == (
         False,
-        None,
-        None,
+        False,
+        False,
     )
-    # Se conservan documento, Dealer, teléfono y transacción.
-    assert (copy.transaction_id, copy.document_number, copy.dealer, copy.phone) == (
+    # Se conservan customerId, dealerCode, teléfono y transacción.
+    assert (copy.transaction_id, copy.customer_id, copy.dealer_code, copy.phone) == (
         "TRX-2",
         "12345678",
         "DEALER-001",
@@ -126,10 +125,10 @@ async def test_after_rejection_a_new_purchase_is_a_new_primary(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-2")
+    await post(api_client, IdentifierId="TRX-2")
     await answer(session_factory, "TRX-1", personal_data=False)
 
-    response = await post(api_client, transaction_id="TRX-3")
+    response = await post(api_client, IdentifierId="TRX-3")
     assert response.status_code == 201
     assert (await get_consent(session_factory, "TRX-3")).source_transaction_id is None
 
@@ -140,7 +139,7 @@ async def test_copies_already_answered_are_not_changed(
     # TRX-2 nace con la respuesta del principal; luego no hay nada pendiente que propagar.
     await post(api_client)
     await accept(session_factory, "TRX-1")
-    await post(api_client, transaction_id="TRX-2")
+    await post(api_client, IdentifierId="TRX-2")
 
     async with session_factory.begin() as session:
         primary = await session.get(Consent, "TRX-1", with_for_update=True)
@@ -152,10 +151,10 @@ async def test_copies_of_other_primaries_are_not_touched(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    await post(api_client, transaction_id="TRX-2")
-    # Mismo documento con otro Dealer: otro principal con su propia copia.
-    await post(api_client, transaction_id="TRX-D2", dealer="DEALER-002")
-    await post(api_client, transaction_id="TRX-D2-COPY", dealer="DEALER-002")
+    await post(api_client, IdentifierId="TRX-2")
+    # Mismo cliente con otro Dealer: otro principal con su propia copia.
+    await post(api_client, IdentifierId="TRX-D2", dealerCode="DEALER-002")
+    await post(api_client, IdentifierId="TRX-D2-COPY", dealerCode="DEALER-002")
 
     assert await answer(session_factory, "TRX-1") == ["TRX-2"]
     assert (await get_consent(session_factory, "TRX-D2-COPY")).status == ConsentStatus.PENDIENTE
@@ -183,7 +182,7 @@ async def test_new_id_arriving_while_the_customer_answers_gets_the_answer(
         # M4 bloquea el principal y está registrando la respuesta...
         primary = await session.get(Consent, "TRX-1", with_for_update=True)
         # ...mientras KIZUNA envía un ID nuevo: el POST queda esperando el bloqueo.
-        pending_post = asyncio.create_task(post(api_client, transaction_id="TRX-2"))
+        pending_post = asyncio.create_task(post(api_client, IdentifierId="TRX-2"))
         await asyncio.sleep(0.3)
         assert not pending_post.done()
 
@@ -206,7 +205,7 @@ async def test_new_id_arriving_while_the_customer_rejects_creates_a_new_primary(
 
     async with session_factory.begin() as session:
         primary = await session.get(Consent, "TRX-1", with_for_update=True)
-        pending_post = asyncio.create_task(post(api_client, transaction_id="TRX-2"))
+        pending_post = asyncio.create_task(post(api_client, IdentifierId="TRX-2"))
         await asyncio.sleep(0.3)
         set_answer(primary, personal_data=False, marketing_yamaha=False, marketing_dealer=False)
         await apply_response_to_linked_copies(session, primary)
@@ -221,7 +220,7 @@ async def test_rows_are_consistent_after_concurrent_ids_and_answer(
     api_client: httpx.AsyncClient, session_factory: Sessions
 ) -> None:
     await post(api_client)
-    posts = [asyncio.create_task(post(api_client, transaction_id=f"TRX-N{i}")) for i in range(5)]
+    posts = [asyncio.create_task(post(api_client, IdentifierId=f"TRX-N{i}")) for i in range(5)]
     await asyncio.sleep(0)
     await answer(session_factory, "TRX-1")
     await asyncio.gather(*posts)

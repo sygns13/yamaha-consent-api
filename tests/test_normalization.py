@@ -2,30 +2,23 @@ import unicodedata
 
 import pytest
 
-from app.models.enums import DocumentType
 from app.utils.normalization import (
+    normalize_customer_id,
     normalize_dealer,
-    normalize_document_number,
-    normalize_document_type,
+    normalize_dealer_name,
+    normalize_email,
     normalize_full_name,
     normalize_phone,
 )
 from app.utils.validation import (
+    is_valid_email,
+    validate_customer_id,
     validate_dealer,
-    validate_document_number,
     validate_full_name,
     validate_phone,
 )
 
-# --- document_type ---
-
-
-@pytest.mark.parametrize(("value", "expected"), [("dni", "DNI"), (" Pasaporte ", "PASAPORTE"), ("CE", "CE")])
-def test_normalize_document_type(value: str, expected: str) -> None:
-    assert normalize_document_type(value) == expected
-
-
-# --- document_number ---
+# --- customerId ---
 
 
 @pytest.mark.parametrize(
@@ -43,71 +36,82 @@ def test_normalize_document_type(value: str, expected: str) -> None:
         ("peña-123", "PEÑA123"),  # ñ minúscula → Ñ
     ],
 )
-def test_normalize_document_number(value: str, expected: str) -> None:
-    assert normalize_document_number(value) == expected
+def test_normalize_customer_id(value: str, expected: str) -> None:
+    assert normalize_customer_id(value) == expected
 
 
-def test_normalize_document_number_composes_decomposed_enie() -> None:
+def test_normalize_customer_id_composes_decomposed_enie() -> None:
     decomposed = unicodedata.normalize("NFD", "añ123")  # "n" + tilde combinada: 6 caracteres
     assert len(decomposed) == 6
-    assert normalize_document_number(decomposed) == "AÑ123"
+    assert normalize_customer_id(decomposed) == "AÑ123"
 
 
 @pytest.mark.parametrize(
-    ("document_type", "value"),
+    "value",
     [
-        (DocumentType.DNI, "12345678"),
-        (DocumentType.DNI, "01234567"),  # ceros a la izquierda
-        (DocumentType.RUC, "20123456789"),
-        (DocumentType.CE, "A"),
-        (DocumentType.CE, "AB1234567890"),  # 12
-        (DocumentType.PASAPORTE, "X12345678"),
-        (DocumentType.PASAPORTE, "123456789012"),  # 12, solo dígitos también es alfanumérico
-        (DocumentType.OTROS, "ABCDEFGHIJ0123456789"),  # 20
-        (DocumentType.CE, "AÑ123"),  # la Ñ cuenta como alfanumérica
-        (DocumentType.CE, "ÑÑÑÑÑÑÑÑÑÑÑÑ"),  # 12 Ñ
-        (DocumentType.PASAPORTE, "PEÑA12345"),
-        (DocumentType.OTROS, "Ñ" * 20),
+        "12345678",
+        "01234567",
+        "20123456789",
+        "A",
+        "AB1234567890",
+        "PEÑA12345",
+        "Ñ" * 20,
+        "ABCDEFGHIJ0123456789",
     ],
 )
-def test_valid_document_numbers(document_type: DocumentType, value: str) -> None:
-    assert validate_document_number(document_type, value) == value
+def test_valid_customer_ids(value: str) -> None:
+    assert validate_customer_id(value) == value
 
 
 @pytest.mark.parametrize(
-    ("document_type", "value", "message"),
+    ("value", "message"),
     [
-        (DocumentType.DNI, "1234567", "8 dígitos"),  # 7
-        (DocumentType.DNI, "123456789", "8 dígitos"),  # 9
-        (DocumentType.DNI, "1234567A", "8 dígitos"),  # letra
-        (DocumentType.DNI, "", "8 dígitos"),
-        (DocumentType.DNI, "١٢٣٤٥٦٧٨", "8 dígitos"),  # dígitos arábigos: no son ASCII
-        (DocumentType.RUC, "2012345678", "11 dígitos"),  # 10
-        (DocumentType.RUC, "201234567890", "11 dígitos"),  # 12
-        (DocumentType.RUC, "2012345678A", "11 dígitos"),
-        (DocumentType.CE, "AB12345678901", "máximo 12"),  # 13
-        (DocumentType.CE, "", "máximo 12"),
-        (DocumentType.CE, "AÉ123", "alfanumérico"),  # tildes: no
-        (DocumentType.CE, "AÇ123", "alfanumérico"),
-        (DocumentType.CE, "Ñ" * 13, "máximo 12"),
-        (DocumentType.DNI, "1234567Ñ", "8 dígitos"),  # la Ñ no vale en DNI ni RUC
-        (DocumentType.PASAPORTE, "X1234567890AB", "máximo 12"),  # 13
-        (DocumentType.PASAPORTE, "ΑΒΓ123", "alfanumérico"),  # letras griegas
-        (DocumentType.PASAPORTE, "X123.456", "alfanumérico"),
-        (DocumentType.OTROS, "A" * 21, "máximo 20"),
-        (DocumentType.OTROS, "AB/123", "alfanumérico"),
+        ("", "alfanumérico"),
+        ("A" * 21, "máximo 20"),
+        ("AÉ123", "alfanumérico"),  # tildes: no
+        ("AÇ123", "alfanumérico"),
+        ("ΑΒΓ123", "alfanumérico"),  # letras griegas
+        ("X123.456", "alfanumérico"),
+        ("AB/123", "alfanumérico"),
+        ("١٢٣٤٥٦٧٨", "alfanumérico"),  # dígitos arábigos: no son ASCII
     ],
 )
-def test_invalid_document_numbers(document_type: DocumentType, value: str, message: str) -> None:
+def test_invalid_customer_ids(value: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        validate_document_number(document_type, value)
+        validate_customer_id(value)
 
 
-@pytest.mark.parametrize("document_type", list(DocumentType))
-def test_every_document_type_has_a_rule(document_type: DocumentType) -> None:
-    # Si se agrega un tipo al enum sin regla, validate_document_number lanza KeyError.
-    with pytest.raises(ValueError):
-        validate_document_number(document_type, "")
+# --- customerEmail y dealerName ---
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), ("", None), ("   ", None), (" A@B.Com ", "a@b.com")]
+)
+def test_normalize_email(value: str | None, expected: str | None) -> None:
+    assert normalize_email(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("a@b.com", True),
+        ("nombre.apellido@mail.com.pe", True),
+        ("a@b", False),
+        ("ab.com", False),
+        ("a b@c.com", False),
+        ("a@@b.com", False),
+        ("x" * 250 + "@a.com", False),
+    ],
+)
+def test_is_valid_email(value: str, valid: bool) -> None:
+    assert is_valid_email(value) is valid
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), ("  ", None), ("  ABC   Motors ", "ABC Motors"), ("abc", "abc")]
+)
+def test_normalize_dealer_name(value: str | None, expected: str | None) -> None:
+    assert normalize_dealer_name(value) == expected
 
 
 # --- full_name ---

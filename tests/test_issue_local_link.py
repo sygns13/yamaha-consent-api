@@ -12,12 +12,11 @@ from tests.conftest import TEST_API_KEY, RecordingWhatsAppSender
 from tests.db_helpers import Sessions
 
 BODY: dict[str, Any] = {
-    "transaction_id": "TRX-1",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan pérez",
-    "phone": "987654321",
-    "dealer": "DEALER-001",
+    "IdentifierId": "TRX-1",
+    "customerId": "12345678",
+    "customerName": "juan pérez",
+    "customerPhone": "987654321",
+    "dealerCode": "DEALER-001",
 }
 
 
@@ -28,14 +27,14 @@ def use_test_database(session_factory: Sessions, monkeypatch: pytest.MonkeyPatch
 
 async def register(client: httpx.AsyncClient, **overrides: Any) -> None:
     response = await client.post(
-        "/api/v1/consents", json={**BODY, **overrides}, headers={"X-API-Key": TEST_API_KEY}
+        "/api/v1/consents", json={"_request": {**BODY, **overrides}}, headers={"X-API-Key": TEST_API_KEY}
     )
     assert response.status_code in (200, 201), response.text
 
 
 async def link_status(client: httpx.AsyncClient, token: str) -> int | str:
     response = await client.get(f"/api/v1/public/consent-links/{token}")
-    return response.json()["link_status"] if response.status_code == 200 else response.status_code
+    return response.json()["linkStatus"] if response.status_code == 200 else response.status_code
 
 
 async def test_issued_token_opens_the_link_and_replaces_the_old_one(
@@ -52,7 +51,7 @@ async def test_issued_token_opens_the_link_and_replaces_the_old_one(
     assert await link_status(api_client, whatsapp_token) == 404
     submitted = await api_client.post(
         f"/api/v1/public/consent-links/{token}/submit",
-        json={"personal_data": True, "marketing_yamaha": True, "marketing_dealer": True},
+        json={"personalDataConsent": True, "marketingConsentYMDP": True, "marketingConsentDEALER": True},
     )
     assert submitted.json() == {"status": "ACEPTADO"}
 
@@ -72,13 +71,17 @@ async def test_refuses_transactions_without_a_usable_link(
     if setup != "missing":
         await register(api_client)
     if setup == "copy":
-        await register(api_client, transaction_id="TRX-2")
+        await register(api_client, IdentifierId="TRX-2")
         target = "TRX-2"
     if setup == "answered":
         token = whatsapp_sender.calls[-1]["token"]
         await api_client.post(
             f"/api/v1/public/consent-links/{token}/submit",
-            json={"personal_data": True, "marketing_yamaha": False, "marketing_dealer": False},
+            json={
+                "personalDataConsent": True,
+                "marketingConsentYMDP": False,
+                "marketingConsentDEALER": False,
+            },
         )
 
     with pytest.raises(issue_local_link.IssueLinkError, match=re.escape(message)):

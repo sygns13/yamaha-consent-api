@@ -1,102 +1,125 @@
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from app.core.validation_errors import translate_errors
-from app.models.enums import DocumentType
-from app.schemas import ConsentCreateRequest, ConsentListQuery
+from app.schemas import ConsentCreateRequest, ConsentListQuery, ConsentRequestData
 
+# Ejemplo del contrato de KIZUNA (contenido de `_request`).
 VALID = {
-    "transaction_id": "TRX-000123",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan  pérez   gómez",
-    "phone": "+51 987 654 321",
-    "dealer": "DEALER-001",
-    "additional_info": {},
+    "IdentifierId": "100002001",
+    "customerId": "76299887",
+    "customerName": "Nombre",
+    "customerPhone": "+51999111222",
+    "customerEmail": "nombre@email.com",
+    "dealerName": "ABC Motors",
+    "dealerCode": "CL0001",
+    "requestDateTime": "2026-11-02T10:35:00+05:00",
 }
 
 
-def errors_by_field(data: dict[str, Any], model: type = ConsentCreateRequest) -> dict[str, str]:
+def errors_by_field(data: dict[str, Any], model: type = ConsentRequestData) -> dict[str, str]:
     """Errores {campo: mensaje en español}, tal como los recibe KIZUNA en el 422."""
     with pytest.raises(ValidationError) as exc:
         model.model_validate(data)
     return {".".join(str(p) for p in err["loc"]): err["msg"] for err in translate_errors(exc.value.errors())}
 
 
-def test_spec_example_is_normalized() -> None:
-    request = ConsentCreateRequest.model_validate(VALID)
-    assert request.transaction_id == "TRX-000123"
-    assert request.document_type is DocumentType.DNI
-    assert request.document_number == "12345678"
-    assert request.full_name == "JUAN PÉREZ GÓMEZ"
-    assert request.phone == "987654321"
-    assert request.dealer == "DEALER-001"
-    assert request.additional_info == {}
+def test_kizuna_example_is_normalized() -> None:
+    request = ConsentCreateRequest.model_validate({"_request": VALID}).request
+    assert request.transaction_id == "100002001"
+    assert request.customer_id == "76299887"
+    assert request.full_name == "NOMBRE"
+    assert request.phone == "999111222"
+    assert request.email == "nombre@email.com"
+    assert request.dealer_name == "ABC Motors"
+    assert request.dealer_code == "CL0001"
+    assert request.requested_at == datetime(2026, 11, 2, 10, 35, tzinfo=timezone(timedelta(hours=5)))
+    assert request.additional_info is None
+
+
+def test_request_wrapper_is_required() -> None:
+    errors = errors_by_field(VALID, ConsentCreateRequest)
+    assert errors == {"_request": "Campo obligatorio"}
 
 
 def test_normalizes_every_field() -> None:
-    request = ConsentCreateRequest.model_validate(
+    request = ConsentRequestData.model_validate(
         {
             **VALID,
-            "document_type": " ce ",
-            "document_number": " ab-1234 5678 ",
-            "full_name": "  josé   ñuñez  ",
-            "phone": "+51 987-654-321",
-            "dealer": "  DEALER-001  ",
+            "customerId": " ab-1234 5678 ",
+            "customerName": "  josé   ñuñez  ",
+            "customerPhone": "+51 987-654-321",
+            "customerEmail": "  Nombre@Email.COM ",
+            "dealerName": "  ABC    Motors  ",
+            "dealerCode": "  CL0001  ",
         }
     )
-    assert request.document_type is DocumentType.CE
-    assert request.document_number == "AB12345678"
+    assert request.customer_id == "AB12345678"
     assert request.full_name == "JOSÉ ÑUÑEZ"
     assert request.phone == "987654321"
-    assert request.dealer == "DEALER-001"
+    assert request.email == "nombre@email.com"
+    assert request.dealer_name == "ABC Motors"
+    assert request.dealer_code == "CL0001"
 
 
-def test_additional_info_is_optional() -> None:
-    data = {k: v for k, v in VALID.items() if k != "additional_info"}
-    assert ConsentCreateRequest.model_validate(data).additional_info is None
+@pytest.mark.parametrize("field", ["customerEmail", "dealerName", "requestDateTime", "additionalInfo"])
+def test_optional_fields(field: str) -> None:
+    request = ConsentRequestData.model_validate({k: v for k, v in VALID.items() if k != field})
+    assert request.model_dump(by_alias=True)[field] is None
+
+
+@pytest.mark.parametrize("email", ["sin-arroba", "a@b", "a b@c.com", "", 123, {"x": 1}, "x" * 250 + "@a.com"])
+def test_invalid_email_becomes_null_without_error(email: Any) -> None:
+    assert ConsentRequestData.model_validate({**VALID, "customerEmail": email}).email is None
+
+
+@pytest.mark.parametrize("name", ["", "   ", 123])
+def test_empty_or_non_text_dealer_name_becomes_null(name: Any) -> None:
+    assert ConsentRequestData.model_validate({**VALID, "dealerName": name}).dealer_name is None
+
+
+def test_request_datetime_without_offset_is_lima_time() -> None:
+    request = ConsentRequestData.model_validate({**VALID, "requestDateTime": "2026-11-02T10:35:00"})
+    assert request.requested_at == datetime(2026, 11, 2, 15, 35, tzinfo=UTC)
 
 
 def test_additional_info_keeps_nested_json() -> None:
     info = {"canal": "tienda", "items": [1, 2], "meta": {"a": None}}
-    assert ConsentCreateRequest.model_validate({**VALID, "additional_info": info}).additional_info == info
+    assert ConsentRequestData.model_validate({**VALID, "additionalInfo": info}).additional_info == info
 
 
 def test_transaction_id_is_kept_as_sent() -> None:
     # Es la PK que KIZUNA usa luego para consultar: no se modifica.
-    request = ConsentCreateRequest.model_validate({**VALID, "transaction_id": "trx-00 1"})
+    request = ConsentRequestData.model_validate({**VALID, "IdentifierId": "trx-00 1"})
     assert request.transaction_id == "trx-00 1"
+
+
+def test_unknown_fields_are_ignored() -> None:
+    request = ConsentRequestData.model_validate({**VALID, "document_type": "DNI", "otro": 1})
+    assert request.customer_id == "76299887"
 
 
 @pytest.mark.parametrize(
     ("overrides", "field", "message"),
     [
-        ({"document_number": "1234567"}, "document_number", "8 dígitos"),
-        ({"document_number": "1234567A"}, "document_number", "8 dígitos"),
-        ({"document_type": "RUC", "document_number": "12345678"}, "document_number", "11 dígitos"),
-        ({"document_type": "CE", "document_number": "AB12345678901"}, "document_number", "máximo 12"),
-        ({"document_type": "PASAPORTE", "document_number": "X.1"}, "document_number", "alfanumérico"),
-        ({"document_type": "OTROS", "document_number": "A" * 21}, "document_number", "máximo 20"),
-        ({"document_type": "CE", "document_number": "AÉ123"}, "document_number", "alfanumérico"),
-        (
-            {"document_type": "LIBRETA"},
-            "document_type",
-            "Debe ser uno de estos valores: 'DNI', 'RUC', 'CE', 'PASAPORTE' o 'OTROS'",
-        ),
-        ({"full_name": "   "}, "full_name", "vacío"),
-        ({"full_name": "A" * 251}, "full_name", "250"),
-        ({"phone": "987 654 32"}, "phone", "9 dígitos"),
-        ({"phone": "+52 987 654 321"}, "phone", "9 dígitos"),
-        ({"phone": "0051 987 654 321"}, "phone", "9 dígitos"),
-        ({"dealer": "   "}, "dealer", "vacío"),
-        ({"dealer": "D" * 101}, "dealer", "100"),
-        ({"transaction_id": ""}, "transaction_id", "No puede estar vacío"),
-        ({"transaction_id": "   "}, "transaction_id", "El ID de transacción no puede estar vacío"),
-        ({"transaction_id": "T" * 101}, "transaction_id", "Debe tener como máximo 100 caracteres"),
-        ({"additional_info": [1, 2]}, "additional_info", "Debe ser un objeto JSON"),
-        ({"additional_info": "texto"}, "additional_info", "Debe ser un objeto JSON"),
+        ({"customerId": "A" * 21}, "customerId", "máximo 20"),
+        ({"customerId": "X.1"}, "customerId", "alfanumérico"),
+        ({"customerId": "AÉ123"}, "customerId", "alfanumérico"),
+        ({"customerId": "  "}, "customerId", "alfanumérico"),
+        ({"customerName": "   "}, "customerName", "vacío"),
+        ({"customerName": "A" * 251}, "customerName", "250"),
+        ({"customerPhone": "987 654 32"}, "customerPhone", "9 dígitos"),
+        ({"customerPhone": "+52 987 654 321"}, "customerPhone", "9 dígitos"),
+        ({"dealerCode": "   "}, "dealerCode", "vacío"),
+        ({"dealerCode": "D" * 101}, "dealerCode", "100"),
+        ({"IdentifierId": ""}, "IdentifierId", "No puede estar vacío"),
+        ({"IdentifierId": "   "}, "IdentifierId", "El IdentifierId no puede estar vacío"),
+        ({"IdentifierId": "T" * 101}, "IdentifierId", "Debe tener como máximo 100 caracteres"),
+        ({"requestDateTime": "02/11/2026"}, "requestDateTime", "ISO 8601"),
+        ({"additionalInfo": [1, 2]}, "additionalInfo", "Debe ser un objeto JSON"),
     ],
 )
 def test_invalid_field_reports_that_field(overrides: dict[str, Any], field: str, message: str) -> None:
@@ -106,60 +129,43 @@ def test_invalid_field_reports_that_field(overrides: dict[str, Any], field: str,
     assert not errors[field].startswith("Value error")
 
 
-def test_own_validator_messages_are_returned_as_is() -> None:
-    errors = errors_by_field({**VALID, "document_number": "1234567"})
-    assert errors == {"document_number": "El DNI debe tener exactamente 8 dígitos"}
+def test_customer_id_with_enie_is_accepted() -> None:
+    assert ConsentRequestData.model_validate({**VALID, "customerId": "peña-1234"}).customer_id == "PEÑA1234"
 
 
-def test_document_with_enie_is_accepted() -> None:
-    request = ConsentCreateRequest.model_validate(
-        {**VALID, "document_type": "pasaporte", "document_number": "peña-1234"}
-    )
-    assert request.document_number == "PEÑA1234"
-
-
-@pytest.mark.parametrize("field", ["document_number", "phone"])
+@pytest.mark.parametrize("field", ["customerId", "customerPhone"])
 def test_numbers_must_be_strings(field: str) -> None:
-    # Un número JSON perdería los ceros a la izquierda (DNI 01234567): se exige texto.
+    # Un número JSON perdería los ceros a la izquierda (01234567): se exige texto.
     errors = errors_by_field({**VALID, field: 12345678})
     assert errors == {field: "Debe ser un texto"}
 
 
 @pytest.mark.parametrize(
-    "field", ["transaction_id", "document_type", "document_number", "full_name", "phone", "dealer"]
+    "field", ["IdentifierId", "customerId", "customerName", "customerPhone", "dealerCode"]
 )
 def test_required_fields(field: str) -> None:
     errors = errors_by_field({k: v for k, v in VALID.items() if k != field})
     assert errors == {field: "Campo obligatorio"}
 
 
-def test_invalid_document_type_does_not_add_a_document_number_error() -> None:
-    errors = errors_by_field({**VALID, "document_type": "LIBRETA", "document_number": "lo que sea"})
-    assert list(errors) == ["document_type"]
-
-
 def test_reports_all_invalid_fields_at_once() -> None:
-    errors = errors_by_field({**VALID, "document_number": "1", "phone": "1", "full_name": ""})
-    assert set(errors) == {"document_number", "phone", "full_name"}
+    errors = errors_by_field({**VALID, "customerId": "1.", "customerPhone": "1", "customerName": ""})
+    assert set(errors) == {"customerId", "customerPhone", "customerName"}
 
 
 # --- ConsentListQuery ---
 
 
-def test_list_query_normalizes_document_and_dealer() -> None:
-    query = ConsentListQuery.model_validate(
-        {"document_type": "dni", "document_number": "1234-5678", "dealer": " DEALER-001 "}
-    )
-    assert query.document_type is DocumentType.DNI
-    assert query.document_number == "12345678"
-    assert query.dealer == "DEALER-001"
+def test_list_query_normalizes_customer_and_dealer() -> None:
+    query = ConsentListQuery.model_validate({"customerId": "7629-9887", "dealerCode": " CL0001 "})
+    assert query.customer_id == "76299887"
+    assert query.dealer_code == "CL0001"
 
 
 def test_list_query_dealer_is_optional() -> None:
-    query = ConsentListQuery.model_validate({"document_type": "RUC", "document_number": "20123456789"})
-    assert query.dealer is None
+    assert ConsentListQuery.model_validate({"customerId": "20123456789"}).dealer_code is None
 
 
-def test_list_query_validates_document() -> None:
-    errors = errors_by_field({"document_type": "DNI", "document_number": "123"}, ConsentListQuery)
-    assert list(errors) == ["document_number"]
+def test_list_query_validates_customer_id() -> None:
+    errors = errors_by_field({"customerId": "12.3"}, ConsentListQuery)
+    assert list(errors) == ["customerId"]

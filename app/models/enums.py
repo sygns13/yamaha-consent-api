@@ -3,14 +3,6 @@ import enum
 from sqlalchemy import Enum
 
 
-class DocumentType(enum.StrEnum):
-    DNI = "DNI"
-    RUC = "RUC"
-    CE = "CE"  # Carné de extranjería
-    PASAPORTE = "PASAPORTE"
-    OTROS = "OTROS"
-
-
 class ConsentStatus(enum.StrEnum):
     PENDIENTE = "PENDIENTE"
     ACEPTADO = "ACEPTADO"
@@ -39,7 +31,6 @@ def _pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
     return Enum(enum_cls, name=name, values_callable=lambda e: [m.value for m in e])
 
 
-document_type_enum = _pg_enum(DocumentType, "document_type")
 consent_status_enum = _pg_enum(ConsentStatus, "consent_status")
 whatsapp_status_enum = _pg_enum(WhatsappStatus, "whatsapp_status")
 notification_status_enum = _pg_enum(NotificationStatus, "notification_status")

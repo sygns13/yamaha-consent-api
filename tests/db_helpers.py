@@ -43,8 +43,8 @@ async def reject(sessions: Sessions, transaction_id: str) -> None:
         deleted_at=datetime.now(UTC),
         full_name=None,
         consent_personal_data=False,
-        consent_marketing_yamaha=None,
-        consent_marketing_dealer=None,
+        consent_marketing_yamaha=False,
+        consent_marketing_dealer=False,
         responded_at=datetime.now(UTC),
     )
 

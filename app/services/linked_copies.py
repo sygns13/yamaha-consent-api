@@ -22,7 +22,7 @@ async def apply_response_to_linked_copies(session: AsyncSession, primary: Consen
 
     - ACEPTADO: se copian el estado, los tres checks y responded_at.
     - NO_ACEPTADO (RN-01): además, borrado lógico de cada copia (is_deleted = 1, deleted_at), nombre anulado y
-      marketing en null. Documento, Dealer, teléfono y transacción se conservan.
+      marketing en false. customerId, dealerCode, teléfono y transacción se conservan.
 
     El llamador crea una notificación a KIZUNA por cada copia devuelta (una respuesta por cada ID de transacción).
     """
@@ -52,8 +52,8 @@ async def apply_response_to_linked_copies(session: AsyncSession, primary: Consen
             copy.is_deleted = 1
             copy.deleted_at = primary.deleted_at or primary.responded_at
             copy.full_name = None
-            copy.consent_marketing_yamaha = None
-            copy.consent_marketing_dealer = None
+            copy.consent_marketing_yamaha = False
+            copy.consent_marketing_dealer = False
 
     if copies:
         logger.info(

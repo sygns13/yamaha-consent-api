@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
@@ -21,23 +21,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(nam
 logger = logging.getLogger("kizuna_mock")
 
 
-class Consents(BaseModel):
-    personal_data: bool
-    # Requeridos pero nulos en NO_ACEPTADO (RN-01).
-    marketing_yamaha: bool | None
-    marketing_dealer: bool | None
-
-
 class ConsentResult(BaseModel):
-    """Payload propuesto en M5. TODO(PENDIENTE-13): reemplazar por el contrato real de KIZUNA."""
+    """Contrato que definió KIZUNA para la respuesta final. Los checks son booleanos, nunca null."""
 
-    transaction_id: str
-    document_type: str
-    document_number: str
-    dealer: str
-    status: Literal["ACEPTADO", "NO_ACEPTADO"]
-    consents: Consents
-    responded_at: datetime
+    IdentifierId: str
+    customerId: str
+    dealerCode: str
+    consentDateTime: datetime
+    personalDataConsent: bool
+    marketingConsentYMDP: bool
+    marketingConsentDEALER: bool
 
 
 class MockState:
@@ -66,19 +59,17 @@ async def consent_result(payload: ConsentResult) -> JSONResponse:
 
     fail_times = int(os.getenv("MOCK_FAIL_TIMES", "0"))
     if attempt <= fail_times:
-        logger.warning(
-            "Fallo simulado %s/%s para transaction_id=%s", attempt, fail_times, payload.transaction_id
-        )
+        logger.warning("Fallo simulado %s/%s para IdentifierId=%s", attempt, fail_times, payload.IdentifierId)
         return JSONResponse({"error": "fallo simulado"}, status_code=500)
 
     state.received.append(
         {"received_at": datetime.now(UTC).isoformat(), "payload": payload.model_dump(mode="json")}
     )
     logger.info(
-        "Recibido transaction_id=%s document=%s status=%s",
-        payload.transaction_id,
-        mask_document(payload.document_number),
-        payload.status,
+        "Recibido IdentifierId=%s customerId=%s personalDataConsent=%s",
+        payload.IdentifierId,
+        mask_document(payload.customerId),
+        payload.personalDataConsent,
     )
     return JSONResponse({"received": True})
 

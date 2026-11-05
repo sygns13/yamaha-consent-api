@@ -6,38 +6,32 @@ español, que Pydantic convierte en un 422 con el detalle del campo.
 
 import re
 
-from app.models.enums import DocumentType
 from app.utils.normalization import PHONE_DIGITS
 
 FULL_NAME_MAX_LENGTH = 250
 DEALER_MAX_LENGTH = 100
 
-# Reglas por tipo de documento. CE, PASAPORTE y OTROS: alfanumérico = A–Z, Ñ y 0–9 (sin tildes ni otros
-# alfabetos). El valor ya viene en mayúsculas. OTROS es (propuesta).
-_ALPHANUMERIC = "A-Z0-9Ñ"
-_DOCUMENT_RULES: dict[DocumentType, tuple[re.Pattern[str], str]] = {
-    DocumentType.DNI: (re.compile(r"[0-9]{8}"), "El DNI debe tener exactamente 8 dígitos"),
-    DocumentType.RUC: (re.compile(r"[0-9]{11}"), "El RUC debe tener exactamente 11 dígitos"),
-    DocumentType.CE: (
-        re.compile(rf"[{_ALPHANUMERIC}]{{1,12}}"),
-        "El carné de extranjería debe ser alfanumérico (letras, Ñ y dígitos), de máximo 12 caracteres",
-    ),
-    DocumentType.PASAPORTE: (
-        re.compile(rf"[{_ALPHANUMERIC}]{{1,12}}"),
-        "El pasaporte debe ser alfanumérico (letras, Ñ y dígitos), de máximo 12 caracteres",
-    ),
-    DocumentType.OTROS: (
-        re.compile(rf"[{_ALPHANUMERIC}]{{1,20}}"),
-        "El documento debe ser alfanumérico (letras, Ñ y dígitos), de máximo 20 caracteres",
-    ),
-}
+CUSTOMER_ID_MAX_LENGTH = 20
+DEALER_NAME_MAX_LENGTH = 150
+EMAIL_MAX_LENGTH = 254
+
+# customerId: alfanumérico = A–Z, Ñ y 0–9 (sin tildes ni otros alfabetos). El valor ya viene en mayúsculas.
+_CUSTOMER_ID = re.compile(rf"[A-Z0-9Ñ]{{1,{CUSTOMER_ID_MAX_LENGTH}}}")
+# Forma básica de un correo (algo@dominio.tld, sin espacios). No se valida más: un correo inválido no rechaza nada.
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
-def validate_document_number(document_type: DocumentType, document_number: str) -> str:
-    pattern, message = _DOCUMENT_RULES[document_type]
-    if not pattern.fullmatch(document_number):
-        raise ValueError(message)
-    return document_number
+def validate_customer_id(customer_id: str) -> str:
+    if not _CUSTOMER_ID.fullmatch(customer_id):
+        raise ValueError(
+            "El identificador del cliente debe ser alfanumérico (letras, Ñ y dígitos), de máximo "
+            f"{CUSTOMER_ID_MAX_LENGTH} caracteres"
+        )
+    return customer_id
+
+
+def is_valid_email(email: str) -> bool:
+    return len(email) <= EMAIL_MAX_LENGTH and _EMAIL.fullmatch(email) is not None
 
 
 def validate_full_name(full_name: str) -> str:
@@ -57,7 +51,7 @@ def validate_phone(phone: str) -> str:
 
 def validate_dealer(dealer: str) -> str:
     if not dealer:
-        raise ValueError("El dealer no puede estar vacío")
+        raise ValueError("El código del dealer no puede estar vacío")
     if len(dealer) > DEALER_MAX_LENGTH:
-        raise ValueError(f"El dealer no puede tener más de {DEALER_MAX_LENGTH} caracteres")
+        raise ValueError(f"El código del dealer no puede tener más de {DEALER_MAX_LENGTH} caracteres")
     return dealer

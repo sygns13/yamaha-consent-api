@@ -1,19 +1,20 @@
 """Callback a KIZUNA (M5): el payload y un intento de envío. Los reintentos están en app/services/kizuna_notifications.py.
 
-TODO(PENDIENTE-13): el contrato real (URL, autenticación, campos y literales de estado) lo define Yamaha/KIZUNA.
-Pasar al endpoint real solo debe tocar las variables de entorno y build_kizuna_payload().
+El payload ya es el que definió KIZUNA. TODO(PENDIENTE-13): faltan la URL, la autenticación y la respuesta esperada
+(mientras tanto, cualquier 2xx es éxito). Pasar al endpoint real solo debe tocar las variables de entorno.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.core.config import Settings
 from app.models import Consent
+from app.utils.datetimes import to_kizuna_iso
 
 logger = logging.getLogger(__name__)
 
@@ -25,33 +26,23 @@ class KizunaConfigurationError(RuntimeError):
     """KIZUNA_CALLBACK_ENABLED=true con la configuración del callback incompleta: la aplicación no debe arrancar."""
 
 
-def build_kizuna_payload(consent: Consent) -> dict[str, Any]:
-    """Respuesta final de un ID de transacción, con el payload propuesto en la spec (M5).
+def build_kizuna_payload(consent: Consent, zone: ZoneInfo) -> dict[str, Any]:
+    """Respuesta final de un IdentifierId, con el contrato que definió KIZUNA.
 
     Única función que arma el payload. Cada registro (principal o copia vinculada, RN-04) se notifica con su propio
-    transaction_id. En NO_ACEPTADO (RN-01) el marketing va en null.
+    IdentifierId. Los checks nunca van en null: lo que no se marcó y el marketing de un rechazo (RN-01) van en false.
+    consentDateTime va con el offset de KIZUNA_TIMEZONE (America/Lima: -05:00).
     """
     deleted = consent.is_deleted == 1
     return {
-        "transaction_id": consent.transaction_id,
-        "document_type": consent.document_type.value,
-        "document_number": consent.document_number,
-        "dealer": consent.dealer,
-        "status": consent.status.value,
-        "consents": {
-            "personal_data": consent.consent_personal_data,
-            "marketing_yamaha": None if deleted else consent.consent_marketing_yamaha,
-            "marketing_dealer": None if deleted else consent.consent_marketing_dealer,
-        },
-        "responded_at": _iso_utc(consent.responded_at),
+        "IdentifierId": consent.transaction_id,
+        "customerId": consent.customer_id,
+        "dealerCode": consent.dealer_code,
+        "consentDateTime": to_kizuna_iso(consent.responded_at, zone),
+        "personalDataConsent": bool(consent.consent_personal_data),
+        "marketingConsentYMDP": not deleted and bool(consent.consent_marketing_yamaha),
+        "marketingConsentDEALER": not deleted and bool(consent.consent_marketing_dealer),
     }
-
-
-def _iso_utc(value: datetime | None) -> str | None:
-    # Mismo formato que las consultas de KIZUNA (sección 2.4): ISO 8601 en UTC con sufijo Z.
-    if value is None:
-        return None
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)

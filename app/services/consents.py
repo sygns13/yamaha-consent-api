@@ -1,8 +1,8 @@
 """Recepción de conformidades desde KIZUNA (M2, sección 2.3): RN-03, RN-04 y RN-05.
 
-Todo ocurre en una sola transacción de base de datos, serializada por documento + Dealer con advisory locks de
+Todo ocurre en una sola transacción de base de datos, serializada por cliente (customer_id) + Dealer (dealer_code) con advisory locks de
 PostgreSQL (pg_advisory_xact_lock): un SELECT ... FOR UPDATE no basta porque en el caso CREATED todavía no existe
-ninguna fila que bloquear. El índice único parcial uq_consents_active_document_dealer queda como red de seguridad.
+ninguna fila que bloquear. El índice único parcial uq_consents_active_customer_dealer queda como red de seguridad.
 
 RN-04 con un ID de transacción nuevo: además de actualizar los datos del cliente en el registro principal, el ID
 nuevo se registra como copia vinculada (source_transaction_id) con las respuestas del principal, para que KIZUNA
@@ -31,7 +31,7 @@ from app.models import (
     WhatsappMessage,
     WhatsappStatus,
 )
-from app.schemas.consent import ConsentCreateRequest
+from app.schemas.consent import ConsentRequestData
 from app.services.kizuna_notifications import enqueue_notifications
 from app.utils.tokens import generate_link_token
 
@@ -73,46 +73,42 @@ class TransactionAlreadyRejectedError(Exception):
 
 async def register_consent(
     session: AsyncSession,
-    request: ConsentCreateRequest,
+    request: ConsentRequestData,
     *,
     sender: WhatsAppSender,
     settings: Settings,
 ) -> RegistrationOutcome:
-    """Registra la solicitud de KIZUNA. `request` ya viene normalizado y validado (ConsentCreateRequest)."""
+    """Registra la solicitud de KIZUNA. `request` ya viene normalizado y validado (ConsentRequestData)."""
+    if request.requested_at is None:
+        # requestDateTime es opcional: sin él vale la hora del sistema al recibir la solicitud.
+        request = request.model_copy(update={"requested_at": datetime.now(UTC)})
     async with session.begin():
-        # Siempre en este orden (transacción → documento) para que dos peticiones no se bloqueen mutuamente.
+        # Siempre en este orden (transacción → cliente) para que dos peticiones no se bloqueen mutuamente.
         await _advisory_lock(session, "transaction", request.transaction_id)
-        await _advisory_lock(
-            session, "document", request.document_type.value, request.document_number, request.dealer
-        )
+        await _advisory_lock(session, "customer", request.customer_id, request.dealer_code)
 
         # Paso 2: reenvío de la misma transacción.
         existing = await session.get(Consent, request.transaction_id, with_for_update=True)
         if existing is not None:
             if existing.is_deleted == 1:
                 raise TransactionAlreadyRejectedError(existing)
-            if (existing.document_type, existing.document_number, existing.dealer) != (
-                request.document_type,
-                request.document_number,
-                request.dealer,
-            ):
-                # Se actualizan solo los datos del cliente (RN-04); documento y Dealer del registro se conservan.
+            if (existing.customer_id, existing.dealer_code) != (request.customer_id, request.dealer_code):
+                # Se actualizan solo los datos del cliente (RN-04); customerId y dealerCode del registro se conservan.
                 logger.warning(
-                    "Reenvío de una transacción con documento o Dealer distintos: se conservan los del registro",
+                    "Reenvío de una transacción con customerId o dealerCode distintos: se conservan los del registro",
                     extra={"transaction_id": request.transaction_id},
                 )
             return _update_customer_data(session, existing, request)
 
-        # Pasos 3 y 4: registro PRINCIPAL activo del mismo documento + Dealer (RN-04 con un ID nuevo). Las copias
+        # Pasos 3 y 4: registro PRINCIPAL activo del mismo cliente + Dealer (RN-04 con un ID nuevo). Las copias
         # vinculadas no cuentan: no tienen enlace ni WhatsApp, el cliente responde en el principal.
         # FOR UPDATE: si en paralelo el cliente está respondiendo en el principal (M4), se espera a que termine y
         # se copia la respuesta ya registrada (y si fue un rechazo, deja de ser activo y se crea uno nuevo: RN-05).
         active = await session.scalar(
             select(Consent)
             .where(
-                Consent.document_type == request.document_type,
-                Consent.document_number == request.document_number,
-                Consent.dealer == request.dealer,
+                Consent.customer_id == request.customer_id,
+                Consent.dealer_code == request.dealer_code,
                 Consent.is_deleted == 0,
                 Consent.source_transaction_id.is_(None),
             )
@@ -142,11 +138,19 @@ async def _advisory_lock(session: AsyncSession, namespace: str, *parts: str) -> 
 
 
 def _update_customer_data(
-    session: AsyncSession, consent: Consent, request: ConsentCreateRequest
+    session: AsyncSession, consent: Consent, request: ConsentRequestData
 ) -> RegistrationOutcome:
-    """RN-04: actualiza nombre, teléfono e información adicional. No toca las conformidades ni envía WhatsApp."""
+    """RN-04: actualiza nombre, teléfono, correo, nombre del Dealer e información adicional.
+
+    No toca las conformidades ni envía WhatsApp. Correo y nombre del Dealer son opcionales: si KIZUNA no los envía
+    (o el correo es inválido) se conserva el valor anterior.
+    """
     consent.full_name = request.full_name
     consent.phone = request.phone
+    if request.email is not None:
+        consent.email = request.email
+    if request.dealer_name is not None:
+        consent.dealer_name = request.dealer_name
     # Si KIZUNA no envía additional_info se conserva el valor anterior; si lo envía (incluso null), se reemplaza.
     if "additional_info" in request.model_fields_set:
         consent.additional_info = request.additional_info
@@ -169,7 +173,7 @@ def _update_customer_data(
 
 
 async def _create_linked_copy(
-    session: AsyncSession, primary: Consent, request: ConsentCreateRequest
+    session: AsyncSession, primary: Consent, request: ConsentRequestData
 ) -> Consent:
     """Registra el ID nuevo como copia del registro principal (RN-04). Sin enlace ni WhatsApp.
 
@@ -180,11 +184,13 @@ async def _create_linked_copy(
     copy = Consent(
         transaction_id=request.transaction_id,
         source_transaction_id=primary.transaction_id,
-        document_type=primary.document_type,
-        document_number=primary.document_number,
-        dealer=primary.dealer,
+        customer_id=primary.customer_id,
+        dealer_code=primary.dealer_code,
+        dealer_name=primary.dealer_name,
         full_name=request.full_name,
         phone=request.phone,
+        email=primary.email,
+        requested_at=request.requested_at,
         additional_info=request.additional_info,
         status=primary.status,
         consent_personal_data=primary.consent_personal_data,
@@ -208,18 +214,20 @@ async def _create_linked_copy(
 
 async def _create(
     session: AsyncSession,
-    request: ConsentCreateRequest,
+    request: ConsentRequestData,
     *,
     sender: WhatsAppSender,
     settings: Settings,
 ) -> RegistrationOutcome:
     consent = Consent(
         transaction_id=request.transaction_id,
-        document_type=request.document_type,
-        document_number=request.document_number,
-        dealer=request.dealer,
+        customer_id=request.customer_id,
+        dealer_code=request.dealer_code,
+        dealer_name=request.dealer_name,
         full_name=request.full_name,
         phone=request.phone,
+        email=request.email,
+        requested_at=request.requested_at,
         additional_info=request.additional_info,
         status=ConsentStatus.PENDIENTE,
         is_deleted=0,

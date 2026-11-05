@@ -4,7 +4,7 @@ from app.models.consent import Consent
 from app.models.consent_evidence import ConsentEvidence
 from app.models.consent_link import ConsentLink
 from app.models.consent_request import ACTION_CREATED, ACTION_UPDATED, ConsentRequest
-from app.models.enums import ConsentStatus, DocumentType, NotificationStatus, WhatsappStatus
+from app.models.enums import ConsentStatus, NotificationStatus, WhatsappStatus
 from app.models.kizuna_notification import KizunaNotification
 from app.models.whatsapp import WhatsappMessage, WhatsappMessageEvent
 
@@ -16,7 +16,6 @@ __all__ = [
     "ConsentLink",
     "ConsentRequest",
     "ConsentStatus",
-    "DocumentType",
     "KizunaNotification",
     "NotificationStatus",
     "WhatsappMessage",

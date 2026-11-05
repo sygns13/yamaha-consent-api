@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,7 @@ SenderDep = Annotated[WhatsAppSender, Depends(get_whatsapp_sender)]
 NotifierDep = Annotated[KizunaNotifier, Depends(get_kizuna_notifier)]
 
 REJECTED_DETAIL = "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato"
-NOT_FOUND_DETAIL = "No existe un registro con ese ID de transacción"
+NOT_FOUND_DETAIL = "No existe un registro con ese IdentifierId"
 
 
 class NotFoundResponse(BaseModel):
@@ -51,7 +51,7 @@ class NotFoundResponse(BaseModel):
         status.HTTP_201_CREATED: {"description": "CREATED: registro, enlace y WhatsApp nuevos"},
         status.HTTP_409_CONFLICT: {
             "model": ConsentConflictResponse,
-            "description": "El transaction_id ya existe y está borrado lógicamente (NO_ACEPTADO)",
+            "description": "El IdentifierId ya existe y está borrado lógicamente (NO_ACEPTADO)",
         },
     },
 )
@@ -65,7 +65,7 @@ async def create_consent(
     notifier: NotifierDep,
 ) -> ConsentCreateResponse | JSONResponse:
     try:
-        outcome = await register_consent(session, body, sender=sender, settings=settings)
+        outcome = await register_consent(session, body.request, sender=sender, settings=settings)
     except TransactionAlreadyRejectedError as exc:
         conflict = ConsentConflictResponse(
             detail=REJECTED_DETAIL,
@@ -73,7 +73,9 @@ async def create_consent(
             status=exc.status,
             is_deleted=exc.is_deleted,
         )
-        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=conflict.model_dump(mode="json"))
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT, content=conflict.model_dump(mode="json", by_alias=True)
+        )
 
     if outcome.result is RegistrationResult.UPDATED:
         response.status_code = status.HTTP_200_OK
@@ -86,7 +88,7 @@ async def create_consent(
         whatsapp = WhatsAppSendStatus(status=outcome.whatsapp.status, error_code=outcome.whatsapp.error_code)
 
     return ConsentCreateResponse(
-        transaction_id=body.transaction_id,
+        transaction_id=body.request.transaction_id,
         result=outcome.result.value,
         affected_transaction_id=outcome.consent.transaction_id,
         status=outcome.consent.status,
@@ -95,15 +97,18 @@ async def create_consent(
 
 
 @router.get(
-    "/consents/{transaction_id}",
+    "/consents/{IdentifierId}",
     response_model=ConsentDetail,
-    summary="Consultar un registro por ID de transacción",
+    summary="Consultar un registro por IdentifierId",
     responses={
         status.HTTP_404_NOT_FOUND: {"model": NotFoundResponse, "description": "No existe el registro"}
     },
 )
-async def read_consent(transaction_id: str, session: SessionDep) -> ConsentDetail:
-    """Incluye los registros borrados lógicamente y las copias vinculadas (RN-04). No devuelve nombre ni teléfono."""
+async def read_consent(
+    transaction_id: Annotated[str, Path(alias="IdentifierId")], session: SessionDep
+) -> ConsentDetail:
+    """Incluye los registros borrados lógicamente y las copias vinculadas (RN-04). No devuelve nombre, teléfono ni
+    correo."""
     consent = await get_consent(session, transaction_id)
     if consent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
@@ -113,14 +118,14 @@ async def read_consent(transaction_id: str, session: SessionDep) -> ConsentDetai
 @router.get(
     "/consents",
     response_model=list[ConsentDetail],
-    summary="Listar los registros de un documento",
+    summary="Listar los registros de un cliente",
 )
 async def search_consents(
     query: Annotated[ConsentListQuery, Query()], session: SessionDep
 ) -> list[ConsentDetail]:
-    """Registros del documento (y del Dealer, opcional), del más reciente al más antiguo.
+    """Registros del customerId (y del dealerCode, opcional), del más reciente al más antiguo.
 
-    Incluye los borrados lógicamente. Sin resultados → 200 con lista vacía. El documento se normaliza igual que al
-    registrarlo (p. ej. "1234-5678" encuentra "12345678").
+    Incluye los borrados lógicamente. Sin resultados → 200 con lista vacía. El customerId se normaliza igual que al
+    registrarlo (p. ej. "7629-9887" encuentra "76299887").
     """
     return [ConsentDetail.from_consent(consent) for consent in await list_consents(session, query)]

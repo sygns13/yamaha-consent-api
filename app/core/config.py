@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -69,6 +70,9 @@ class Settings(BaseSettings):
     # Al arrancar se reenvían las notificaciones PENDIENTE sin reclamar o con el reclamo vencido (más de N minutos
     # sin intento).
     kizuna_callback_reprocess_after_minutes: float = Field(default=10, gt=0)
+    # Zona horaria de las fechas que se intercambian con KIZUNA: consentDateTime, las fechas de las respuestas y
+    # requestDateTime cuando llega sin offset.
+    kizuna_timezone: str = "America/Lima"
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -87,11 +91,24 @@ class Settings(BaseSettings):
             raise ValueError("los tiempos de espera no pueden ser negativos")
         return value
 
+    @field_validator("kizuna_timezone")
+    @classmethod
+    def _valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"zona horaria desconocida: {value}") from exc
+        return value
+
     @field_validator("landing_base_url")
     @classmethod
     def _strip_trailing_slash(cls, value: str) -> str:
         # El enlace se arma como {LANDING_BASE_URL}/?t={token}.
         return value.rstrip("/")
+
+    @property
+    def kizuna_zone(self) -> ZoneInfo:
+        return ZoneInfo(self.kizuna_timezone)
 
 
 @lru_cache

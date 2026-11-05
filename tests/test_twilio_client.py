@@ -311,12 +311,13 @@ def test_app_does_not_start_when_send_enabled_without_config() -> None:
 # --- Integración con POST /api/v1/consents ---
 
 BODY = {
-    "transaction_id": "TRX-T1",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan pérez",
-    "phone": "+51 987 654 321",
-    "dealer": "DEALER-001",
+    "_request": {
+        "IdentifierId": "TRX-T1",
+        "customerId": "12345678",
+        "customerName": "juan pérez",
+        "customerPhone": "+51 987 654 321",
+        "dealerCode": "DEALER-001",
+    }
 }
 
 
@@ -341,7 +342,7 @@ async def test_post_sends_through_twilio_and_stores_the_message(
     response = await twilio_api_client.post("/api/v1/consents", json=BODY)
 
     assert response.status_code == 201
-    assert response.json()["whatsapp"] == {"status": "queued", "error_code": None}
+    assert response.json()["whatsapp"] == {"status": "queued", "errorCode": None}
     (request,) = twilio_http.requests
     assert request["data"]["To"] == "whatsapp:+51987654321"
     token = json.loads(request["data"]["ContentVariables"])["1"]
@@ -362,7 +363,7 @@ async def test_post_keeps_the_record_when_twilio_rejects(
     response = await twilio_api_client.post("/api/v1/consents", json=BODY)
 
     assert response.status_code == 201
-    assert response.json()["whatsapp"] == {"status": "failed", "error_code": "21211"}
+    assert response.json()["whatsapp"] == {"status": "failed", "errorCode": "21211"}
     consent = await get_consent(session_factory, "TRX-T1")
     assert isinstance(consent, Consent)
     (message,) = await all_rows(session_factory, WhatsappMessage)
@@ -381,6 +382,6 @@ async def test_post_keeps_the_record_when_twilio_is_unreachable(
     response = await twilio_api_client.post("/api/v1/consents", json=BODY)
 
     assert response.status_code == 201
-    assert response.json()["whatsapp"] == {"status": "failed", "error_code": None}
+    assert response.json()["whatsapp"] == {"status": "failed", "errorCode": None}
     (message,) = await all_rows(session_factory, WhatsappMessage)
     assert message.error_message.startswith("ConnectionError")

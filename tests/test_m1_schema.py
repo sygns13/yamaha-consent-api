@@ -20,7 +20,6 @@ from app.models import (
     ConsentLink,
     ConsentRequest,
     ConsentStatus,
-    DocumentType,
     KizunaNotification,
     NotificationStatus,
     WhatsappMessage,
@@ -58,11 +57,11 @@ async def session() -> AsyncIterator[AsyncSession]:
 def make_consent(transaction_id: str | None = None, **overrides) -> Consent:
     values = {
         "transaction_id": transaction_id or f"TEST-{uuid.uuid4().hex[:12]}",
-        "document_type": DocumentType.DNI,
-        "document_number": "12345678",
-        "dealer": "DEALER-TEST",
+        "customer_id": "12345678",
+        "dealer_code": "DEALER-TEST",
         "full_name": "JUAN PÉREZ GÓMEZ",
         "phone": "987654321",
+        "requested_at": datetime.now(UTC),
     }
     values.update(overrides)
     return Consent(**values)
@@ -72,12 +71,12 @@ async def test_duplicate_transaction_id_fails(session: AsyncSession) -> None:
     session.add(make_consent("TEST-DUP"))
     await session.flush()
 
-    session.add(make_consent("TEST-DUP", dealer="DEALER-OTRO"))
+    session.add(make_consent("TEST-DUP", dealer_code="DEALER-OTRO"))
     with pytest.raises(IntegrityError, match="pk_consents"):
         await session.flush()
 
 
-async def test_same_document_and_dealer_allowed_when_previous_is_deleted(session: AsyncSession) -> None:
+async def test_same_customer_and_dealer_allowed_when_previous_is_deleted(session: AsyncSession) -> None:
     session.add(make_consent("TEST-OLD", is_deleted=1, full_name=None, status=ConsentStatus.NO_ACEPTADO))
     await session.flush()
 
@@ -86,18 +85,18 @@ async def test_same_document_and_dealer_allowed_when_previous_is_deleted(session
 
     rows = await session.scalars(
         select(Consent.transaction_id).where(
-            Consent.document_number == "12345678", Consent.dealer == "DEALER-TEST"
+            Consent.customer_id == "12345678", Consent.dealer_code == "DEALER-TEST"
         )
     )
     assert set(rows) == {"TEST-OLD", "TEST-NEW"}
 
 
-async def test_two_active_rows_for_same_document_and_dealer_fail(session: AsyncSession) -> None:
+async def test_two_active_rows_for_same_customer_and_dealer_fail(session: AsyncSession) -> None:
     session.add(make_consent("TEST-A1"))
     await session.flush()
 
     session.add(make_consent("TEST-A2"))
-    with pytest.raises(IntegrityError, match="uq_consents_active_document_dealer"):
+    with pytest.raises(IntegrityError, match="uq_consents_active_customer_dealer"):
         await session.flush()
 
 
@@ -131,8 +130,8 @@ async def test_linked_copy_must_point_to_an_existing_record(session: AsyncSessio
         await session.flush()
 
 
-async def test_same_document_with_other_dealer_allowed(session: AsyncSession) -> None:
-    session.add_all([make_consent("TEST-D1"), make_consent("TEST-D2", dealer="DEALER-OTRO")])
+async def test_same_customer_with_other_dealer_allowed(session: AsyncSession) -> None:
+    session.add_all([make_consent("TEST-D1"), make_consent("TEST-D2", dealer_code="DEALER-OTRO")])
     await session.flush()
 
 
@@ -159,8 +158,8 @@ async def test_invalid_enum_value_fails(session: AsyncSession) -> None:
     with pytest.raises(DBAPIError):
         await session.execute(
             text(
-                "INSERT INTO consents (transaction_id, document_type, document_number, dealer, phone) "
-                "VALUES ('TEST-ENUM', 'LIBRETA', '1', 'D', '987654321')"
+                "INSERT INTO consents (transaction_id, customer_id, dealer_code, phone, requested_at, status) "
+                "VALUES ('TEST-ENUM', '1', 'D', '987654321', now(), 'LIBRETA')"
             )
         )
 
@@ -205,12 +204,16 @@ async def test_full_graph_insert(session: AsyncSession) -> None:
                 user_agent="pytest",
                 policy_version="v1",
                 policy_url="https://example.com/privacidad",
-                answers={"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True},
+                answers={
+                    "personalDataConsent": True,
+                    "marketingConsentYMDP": False,
+                    "marketingConsentDEALER": True,
+                },
                 submitted_at=now,
             ),
             KizunaNotification(
                 transaction_id=consent.transaction_id,
-                payload={"transaction_id": consent.transaction_id},
+                payload={"IdentifierId": consent.transaction_id},
                 target_url="http://kizuna-mock:8081/kizuna/consent-result",
             ),
         ]

@@ -57,7 +57,9 @@ Run (`--forwarded-allow-ips '*'`). La imagen no incluye `.env`, `tests/`, `mocks
 
 ### Mock de KIZUNA
 
-- `POST /kizuna/consent-result`: valida el payload y responde `200 {"received": true}`.
+- `POST /kizuna/consent-result`: valida el payload con el contrato de KIZUNA (`IdentifierId`, `customerId`,
+  `dealerCode`, `consentDateTime`, `personalDataConsent`, `marketingConsentYMDP`, `marketingConsentDEALER`) y
+  responde `200 {"received": true}`.
 - `GET /kizuna/received`: payloads recibidos y total de peticiones. `DELETE /kizuna/received`: reinicia.
 - Simular fallos: `MOCK_FAIL_TIMES=3 docker compose up -d kizuna-mock` (500 las 3 primeras veces) o
   `MOCK_RESPONSE_DELAY_SECONDS=15` (timeout).
@@ -97,7 +99,8 @@ responde, se saltan; otra URL: `KIZUNA_MOCK_URL=http://host:puerto`.
 ## Postman
 
 Colección en `postman/collection.json`: health, endpoints de KIZUNA, landing, webhook de Twilio y mock de KIZUNA.
-Variables: `base_url`, `api_key`, `token`, `transaction_id`, `kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
+Variables: `base_url`, `api_key`, `token`, `transaction_id` (el `IdentifierId`), `customer_id`, `dealer_code`,
+`kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
 
 El token del enlace solo viaja en el WhatsApp y nunca se guarda ni se loguea. Para obtener uno en local, después de
 `Registrar cliente`:
@@ -290,7 +293,8 @@ esquema nuevo, y revisando antes qué borra.
 
 - `TWILIO_SEND_ENABLED=true`: cuando la plantilla esté aprobada por Meta y se conozca `TWILIO_CONTENT_SID`
   (PENDIENTE-07 y PENDIENTE-15).
-- `KIZUNA_CALLBACK_ENABLED=false` hasta tener el endpoint real de KIZUNA y su contrato (PENDIENTE-13). Al encenderlo,
+- `KIZUNA_CALLBACK_ENABLED=false` hasta tener la URL y la autenticación del endpoint real de KIZUNA (PENDIENTE-13;
+  el payload ya es el definido por KIZUNA y cualquier `2xx` se toma como éxito). Al encenderlo,
   el reproceso del arranque envía las notificaciones acumuladas.
 - `DOCS_ENABLED` (PENDIENTE-12), `PRIVACY_POLICY_URL` (PENDIENTE-14) y el dominio de la landing en
   `CORS_ALLOWED_ORIGINS` / `LANDING_BASE_URL` (PENDIENTE-15).

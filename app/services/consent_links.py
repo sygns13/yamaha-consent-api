@@ -62,12 +62,26 @@ def link_status(link: ConsentLink, now: datetime) -> LinkStatus:
     return LinkStatus.VALID
 
 
-async def get_link_status(session: AsyncSession, token: str) -> LinkStatus | None:
-    """Estado del enlace, o None si el token no existe."""
-    link = await session.scalar(select(ConsentLink).where(ConsentLink.token_hash == hash_token(token)))
-    if link is None:
+@dataclass(frozen=True)
+class LinkInfo:
+    status: LinkStatus
+    # dealerName que envió KIZUNA (se muestra en la landing); None si no lo envió.
+    dealer_name: str | None
+
+
+async def get_link_info(session: AsyncSession, token: str) -> LinkInfo | None:
+    """Estado del enlace y nombre del Dealer de su registro, o None si el token no existe."""
+    row = (
+        await session.execute(
+            select(ConsentLink, Consent.dealer_name)
+            .join(Consent, Consent.transaction_id == ConsentLink.transaction_id)
+            .where(ConsentLink.token_hash == hash_token(token))
+        )
+    ).first()
+    if row is None:
         return None
-    return link_status(link, datetime.now(UTC))
+    link, dealer_name = row
+    return LinkInfo(status=link_status(link, datetime.now(UTC)), dealer_name=dealer_name)
 
 
 async def submit_consent(
@@ -101,7 +115,7 @@ async def submit_consent(
         # que una copia nueva o ve esta respuesta ya registrada o existe cuando se propaga en el paso 7.
         consent = await session.get(Consent, link.transaction_id, with_for_update=True)
 
-        # Paso 3: la evidencia guarda lo que el cliente envió, tal cual.
+        # Paso 3: la evidencia guarda lo que el cliente envió, tal cual (incluidos los null).
         session.add(
             ConsentEvidence(
                 transaction_id=consent.transaction_id,
@@ -143,20 +157,21 @@ async def submit_consent(
 
 
 def _apply_answers(consent: Consent, answers: ConsentSubmitRequest, now: datetime) -> None:
-    consent.consent_personal_data = answers.personal_data
+    # Un check que llega null se registra como false (decisión del dueño): con respuesta nunca quedan nulos.
+    consent.consent_personal_data = bool(answers.personal_data)
     consent.responded_at = now
     if answers.personal_data:
         # Paso 4.
         consent.status = ConsentStatus.ACEPTADO
-        consent.consent_marketing_yamaha = answers.marketing_yamaha
-        consent.consent_marketing_dealer = answers.marketing_dealer
+        consent.consent_marketing_yamaha = bool(answers.marketing_yamaha)
+        consent.consent_marketing_dealer = bool(answers.marketing_dealer)
         return
 
-    # Paso 5, RN-01: borrado lógico. Solo se anula el nombre; el marketing no se conserva. Se mantienen documento,
-    # Dealer, teléfono (trazabilidad), transacción, additional_info, evidencia y WhatsApp.
+    # Paso 5, RN-01: borrado lógico. Solo se anula el nombre; el marketing no se conserva (queda en false). Se
+    # mantienen customerId, dealerCode, teléfono (trazabilidad), transacción, additional_info, evidencia y WhatsApp.
     consent.status = ConsentStatus.NO_ACEPTADO
     consent.is_deleted = 1
     consent.deleted_at = now
     consent.full_name = None
-    consent.consent_marketing_yamaha = None
-    consent.consent_marketing_dealer = None
+    consent.consent_marketing_yamaha = False
+    consent.consent_marketing_dealer = False

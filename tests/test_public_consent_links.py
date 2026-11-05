@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -27,17 +28,18 @@ from tests.db_helpers import Sessions, all_rows, count, get_consent
 
 CONSENTS_URL = "/api/v1/consents"
 BODY: dict[str, Any] = {
-    "transaction_id": "TRX-1",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan pérez",
-    "phone": "987654321",
-    "dealer": "DEALER-001",
-    "additional_info": {"canal": "tienda"},
+    "IdentifierId": "TRX-1",
+    "customerId": "12345678",
+    "customerName": "juan pérez",
+    "customerPhone": "987654321",
+    "dealerName": "ABC Motors",
+    "dealerCode": "DEALER-001",
+    "additionalInfo": {"canal": "tienda"},
 }
 POLICY_URL = "https://www.yamaha.com.pe/politica-de-privacidad"
-ACCEPT_ALL = {"personal_data": True, "marketing_yamaha": True, "marketing_dealer": True}
-REJECT_ALL = {"personal_data": False, "marketing_yamaha": False, "marketing_dealer": False}
+ACCEPT_ALL = {"personalDataConsent": True, "marketingConsentYMDP": True, "marketingConsentDEALER": True}
+REJECT_ALL = {"personalDataConsent": False, "marketingConsentYMDP": False, "marketingConsentDEALER": False}
+LIMA = ZoneInfo("America/Lima")
 USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
 
 
@@ -72,7 +74,7 @@ async def public_client(api_client: httpx.AsyncClient) -> AsyncIterator[httpx.As
 async def create_consent(client: httpx.AsyncClient, sender: RecordingWhatsAppSender, **overrides: Any) -> str:
     """Registra un cliente por la API de KIZUNA y devuelve el token del enlace enviado por WhatsApp."""
     response = await client.post(
-        CONSENTS_URL, json={**BODY, **overrides}, headers={"X-API-Key": "test-api-key"}
+        CONSENTS_URL, json={"_request": {**BODY, **overrides}}, headers={"X-API-Key": "test-api-key"}
     )
     assert response.status_code in (200, 201), response.text
     return sender.calls[-1]["token"]
@@ -104,9 +106,9 @@ async def test_valid_link(public_client: httpx.AsyncClient, token: str) -> None:
     assert response.status_code == 200
     # Sin datos personales: solo estos tres campos.
     assert response.json() == {
-        "link_status": "VALID",
-        "privacy_policy_url": POLICY_URL,
-        "dealer_display_name": None,
+        "linkStatus": "VALID",
+        "privacyPolicyUrl": POLICY_URL,
+        "dealerName": "ABC Motors",
     }
 
 
@@ -114,7 +116,7 @@ async def test_privacy_policy_url_not_configured_is_null(
     public_client: httpx.AsyncClient, token: str, test_settings: Settings
 ) -> None:
     test_settings.privacy_policy_url = ""
-    assert (await public_client.get(link_url(token))).json()["privacy_policy_url"] is None
+    assert (await public_client.get(link_url(token))).json()["privacyPolicyUrl"] is None
 
 
 async def test_unknown_token_is_404(public_client: httpx.AsyncClient, token: str) -> None:
@@ -127,7 +129,7 @@ async def test_expired_link(public_client: httpx.AsyncClient, token: str, sessio
     await set_link(session_factory, token, expires_at=datetime.now(UTC) - timedelta(seconds=1))
     response = await public_client.get(link_url(token))
     assert response.status_code == 200
-    assert response.json()["link_status"] == "EXPIRED"
+    assert response.json()["linkStatus"] == "EXPIRED"
 
 
 async def test_link_expires_after_link_ttl_hours(
@@ -139,7 +141,7 @@ async def test_link_expires_after_link_ttl_hours(
 
 async def test_used_link(public_client: httpx.AsyncClient, token: str, dispatched: list) -> None:
     await submit(public_client, token, ACCEPT_ALL)
-    assert (await public_client.get(link_url(token))).json()["link_status"] == "USED"
+    assert (await public_client.get(link_url(token))).json()["linkStatus"] == "USED"
 
 
 async def test_used_and_expired_link_is_used(
@@ -149,7 +151,7 @@ async def test_used_and_expired_link_is_used(
     await set_link(
         session_factory, token, used_at=now - timedelta(days=2), expires_at=now - timedelta(days=1)
     )
-    assert (await public_client.get(link_url(token))).json()["link_status"] == "USED"
+    assert (await public_client.get(link_url(token))).json()["linkStatus"] == "USED"
 
 
 async def test_get_does_not_modify_anything(
@@ -202,7 +204,7 @@ async def test_full_acceptance(
 async def test_acceptance_with_marketing_false(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
-    answers = {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": False}
+    answers = {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": False}
     response = await submit(public_client, token, answers)
     assert response.json() == {"status": "ACEPTADO"}
 
@@ -225,7 +227,9 @@ async def test_acceptance_with_mixed_marketing(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
     await submit(
-        public_client, token, {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": True},
     )
     consent = await get_consent(session_factory, "TRX-1")
     assert (consent.consent_marketing_yamaha, consent.consent_marketing_dealer) == (False, True)
@@ -247,13 +251,12 @@ async def test_rn01_all_unchecked(
     assert consent.consent_personal_data is False
     # Borrado lógico: solo se anula el nombre; el marketing no se conserva.
     assert consent.full_name is None
-    assert (consent.consent_marketing_yamaha, consent.consent_marketing_dealer) == (None, None)
+    assert (consent.consent_marketing_yamaha, consent.consent_marketing_dealer) == (False, False)
     assert consent.is_deleted == 1
     assert consent.deleted_at == consent.responded_at
-    # Se conservan transacción, documento, Dealer, teléfono e información adicional.
-    assert (consent.transaction_id, consent.document_type.value, consent.document_number, consent.dealer) == (
+    # Se conservan transacción, customerId, dealerCode, teléfono e información adicional.
+    assert (consent.transaction_id, consent.customer_id, consent.dealer_code) == (
         "TRX-1",
-        "DNI",
         "12345678",
         "DEALER-001",
     )
@@ -267,28 +270,31 @@ async def test_rn01_all_unchecked(
 async def test_rn01_with_marketing_checked_does_not_keep_marketing(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
-    answers = {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": True}
+    answers = {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": True}
     assert (await submit(public_client, token, answers)).json() == {"status": "NO_ACEPTADO"}
 
     consent = await get_consent(session_factory, "TRX-1")
-    assert (consent.consent_marketing_yamaha, consent.consent_marketing_dealer) == (None, None)
+    assert (consent.consent_marketing_yamaha, consent.consent_marketing_dealer) == (False, False)
     assert (consent.is_deleted, consent.full_name) == (1, None)
 
 
-async def test_rn01_query_shows_marketing_null(
+async def test_rn01_query_shows_marketing_false(
     public_client: httpx.AsyncClient, token: str, dispatched: list
 ) -> None:
     await submit(
-        public_client, token, {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": True},
     )
     response = await public_client.get(f"{CONSENTS_URL}/TRX-1", headers={"X-API-Key": "test-api-key"})
     assert response.json()["status"] == "NO_ACEPTADO"
-    assert response.json()["consents"] == {
-        "personal_data": False,
-        "marketing_yamaha": None,
-        "marketing_dealer": None,
-    }
-    assert response.json()["is_deleted"] == 1
+    body = response.json()
+    assert (body["personalDataConsent"], body["marketingConsentYMDP"], body["marketingConsentDEALER"]) == (
+        False,
+        False,
+        False,
+    )
+    assert body["isDeleted"] == 1
 
 
 async def test_after_rn01_a_new_purchase_creates_a_new_record(
@@ -299,7 +305,7 @@ async def test_after_rn01_a_new_purchase_creates_a_new_record(
     dispatched: list,
 ) -> None:
     await submit(public_client, token, REJECT_ALL)
-    new_token = await create_consent(public_client, whatsapp_sender, transaction_id="TRX-2")
+    new_token = await create_consent(public_client, whatsapp_sender, IdentifierId="TRX-2")
     # RN-05: registro, enlace y WhatsApp nuevos; el cliente puede aceptar con el enlace nuevo.
     assert new_token != token
     assert (await submit(public_client, new_token, ACCEPT_ALL)).json() == {"status": "ACEPTADO"}
@@ -312,7 +318,7 @@ async def test_after_rn01_a_new_purchase_creates_a_new_record(
 async def test_evidence_is_recorded(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
-    answers = {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True}
+    answers = {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": True}
     await submit(
         public_client,
         token,
@@ -335,7 +341,7 @@ async def test_evidence_is_recorded(
 async def test_evidence_keeps_what_the_customer_sent_in_rn01(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
-    answers = {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": False}
+    answers = {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": False}
     await submit(public_client, token, answers)
     (evidence,) = await all_rows(session_factory, ConsentEvidence)
     assert evidence.answers == answers
@@ -384,7 +390,7 @@ async def test_expired_link_is_410(
     await set_link(session_factory, token, expires_at=datetime.now(UTC) - timedelta(seconds=1))
     response = await submit(public_client, token, ACCEPT_ALL)
     assert response.status_code == 410
-    assert response.json() == {"detail": "El enlace venció", "link_status": "EXPIRED"}
+    assert response.json() == {"detail": "El enlace venció", "linkStatus": "EXPIRED"}
     await assert_nothing_recorded(session_factory)
     assert dispatched == []
 
@@ -395,7 +401,7 @@ async def test_used_link_is_410(
     assert (await submit(public_client, token, ACCEPT_ALL)).status_code == 200
     response = await submit(public_client, token, REJECT_ALL)
     assert response.status_code == 410
-    assert response.json() == {"detail": "El enlace ya fue utilizado", "link_status": "USED"}
+    assert response.json() == {"detail": "El enlace ya fue utilizado", "linkStatus": "USED"}
 
     # La primera respuesta no cambia.
     consent = await get_consent(session_factory, "TRX-1")
@@ -439,7 +445,7 @@ async def test_concurrent_double_submit_records_only_one(
     assert codes == [200, 410]
     winner = next(response for response in responses if response.status_code == 200)
     loser = next(response for response in responses if response.status_code == 410)
-    assert loser.json()["link_status"] == "USED"
+    assert loser.json()["linkStatus"] == "USED"
 
     # Solo uno se registra, y el registro queda con la respuesta del que ganó.
     assert await count(session_factory, ConsentEvidence) == 1
@@ -466,10 +472,8 @@ async def test_many_concurrent_submits_record_only_one(
 @pytest.mark.parametrize(
     ("body", "loc", "error_type"),
     [
-        ({"personal_data": True, "marketing_yamaha": False}, ["body", "marketing_dealer"], "missing"),
-        ({**ACCEPT_ALL, "personal_data": "true"}, ["body", "personal_data"], "bool_type"),
-        ({**ACCEPT_ALL, "marketing_yamaha": 1}, ["body", "marketing_yamaha"], "bool_type"),
-        ({**ACCEPT_ALL, "marketing_dealer": None}, ["body", "marketing_dealer"], "bool_type"),
+        ({**ACCEPT_ALL, "personalDataConsent": "true"}, ["body", "personalDataConsent"], "bool_type"),
+        ({**ACCEPT_ALL, "marketingConsentYMDP": 1}, ["body", "marketingConsentYMDP"], "bool_type"),
         ({**ACCEPT_ALL, "full_name": "x"}, ["body", "full_name"], "extra_forbidden"),
     ],
 )
@@ -501,7 +505,9 @@ async def test_acceptance_creates_a_pending_notification_and_dispatches_it(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
     await submit(
-        public_client, token, {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": True},
     )
 
     (notification,) = await all_rows(session_factory, KizunaNotification)
@@ -510,34 +516,37 @@ async def test_acceptance_creates_a_pending_notification_and_dispatches_it(
     assert notification.status == NotificationStatus.PENDIENTE
     assert notification.attempts == 0
     assert notification.target_url == "http://kizuna-mock:8081/kizuna/consent-result"
+    # Contrato de KIZUNA: consentDateTime con la hora de Lima.
     assert notification.payload == {
-        "transaction_id": "TRX-1",
-        "document_type": "DNI",
-        "document_number": "12345678",
-        "dealer": "DEALER-001",
-        "status": "ACEPTADO",
-        "consents": {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True},
-        "responded_at": consent.responded_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "IdentifierId": "TRX-1",
+        "customerId": "12345678",
+        "dealerCode": "DEALER-001",
+        "consentDateTime": consent.responded_at.astimezone(LIMA).isoformat(timespec="seconds"),
+        "personalDataConsent": True,
+        "marketingConsentYMDP": False,
+        "marketingConsentDEALER": True,
     }
+    assert notification.payload["consentDateTime"].endswith("-05:00")
     # Se dispara después del commit con el ID de la notificación.
     assert dispatched == [[notification.id]]
 
 
-async def test_rejection_notification_has_marketing_null(
+async def test_rejection_notification_has_marketing_false(
     public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
 ) -> None:
     await submit(
-        public_client, token, {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": True},
     )
     (notification,) = await all_rows(session_factory, KizunaNotification)
-    assert notification.payload["status"] == "NO_ACEPTADO"
-    assert notification.payload["consents"] == {
-        "personal_data": False,
-        "marketing_yamaha": None,
-        "marketing_dealer": None,
-    }
-    # El payload no lleva nombre ni teléfono.
-    assert not {"full_name", "phone"} & notification.payload.keys()
+    assert (
+        notification.payload["personalDataConsent"],
+        notification.payload["marketingConsentYMDP"],
+        notification.payload["marketingConsentDEALER"],
+    ) == (False, False, False)
+    # El payload no lleva nombre, teléfono ni correo.
+    assert not {"customerName", "customerPhone", "customerEmail"} & notification.payload.keys()
 
 
 async def test_dispatch_runs_after_the_commit(
@@ -574,7 +583,9 @@ async def test_callback_disabled_leaves_the_notification_pending(
 async def create_copies(client: httpx.AsyncClient, *transaction_ids: str) -> None:
     for tid in transaction_ids:
         response = await client.post(
-            CONSENTS_URL, json={**BODY, "transaction_id": tid}, headers={"X-API-Key": "test-api-key"}
+            CONSENTS_URL,
+            json={"_request": {**BODY, "IdentifierId": tid}},
+            headers={"X-API-Key": "test-api-key"},
         )
         assert response.status_code == 200, response.text
 
@@ -584,7 +595,9 @@ async def test_acceptance_is_copied_to_pending_linked_copies(
 ) -> None:
     await create_copies(public_client, "TRX-2", "TRX-3")
     await submit(
-        public_client, token, {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": True},
     )
 
     primary = await get_consent(session_factory, "TRX-1")
@@ -602,8 +615,8 @@ async def test_acceptance_is_copied_to_pending_linked_copies(
     # Una notificación por cada ID de transacción, cada una con su propio transaction_id.
     notifications = await all_rows(session_factory, KizunaNotification)
     assert sorted(n.transaction_id for n in notifications) == ["TRX-1", "TRX-2", "TRX-3"]
-    assert all(n.payload["transaction_id"] == n.transaction_id for n in notifications)
-    assert all(n.payload["status"] == "ACEPTADO" for n in notifications)
+    assert all(n.payload["IdentifierId"] == n.transaction_id for n in notifications)
+    assert all(n.payload["personalDataConsent"] is True for n in notifications)
     assert sorted(dispatched[0]) == sorted(n.id for n in notifications)
 
 
@@ -612,7 +625,9 @@ async def test_rejection_applies_rn01_to_pending_linked_copies(
 ) -> None:
     await create_copies(public_client, "TRX-2")
     await submit(
-        public_client, token, {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": True}
+        public_client,
+        token,
+        {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": True},
     )
 
     copy = await get_consent(session_factory, "TRX-2")
@@ -620,14 +635,14 @@ async def test_rejection_applies_rn01_to_pending_linked_copies(
     assert (copy.is_deleted, copy.full_name) == (1, None)
     assert (copy.consent_personal_data, copy.consent_marketing_yamaha, copy.consent_marketing_dealer) == (
         False,
-        None,
-        None,
+        False,
+        False,
     )
-    assert (copy.document_number, copy.dealer, copy.phone) == ("12345678", "DEALER-001", "987654321")
+    assert (copy.customer_id, copy.dealer_code, copy.phone) == ("12345678", "DEALER-001", "987654321")
 
     notifications = await all_rows(session_factory, KizunaNotification)
     assert sorted(n.transaction_id for n in notifications) == ["TRX-1", "TRX-2"]
-    assert all(n.payload["consents"]["marketing_yamaha"] is None for n in notifications)
+    assert all(n.payload["marketingConsentYMDP"] is False for n in notifications)
 
 
 async def test_new_id_arriving_during_submit_ends_answered(
@@ -637,7 +652,9 @@ async def test_new_id_arriving_during_submit_ends_answered(
     _, response = await asyncio.gather(
         submit(public_client, token, ACCEPT_ALL),
         public_client.post(
-            CONSENTS_URL, json={**BODY, "transaction_id": "TRX-2"}, headers={"X-API-Key": "test-api-key"}
+            CONSENTS_URL,
+            json={"_request": {**BODY, "IdentifierId": "TRX-2"}},
+            headers={"X-API-Key": "test-api-key"},
         ),
     )
     assert response.status_code == 200
@@ -694,3 +711,61 @@ def test_link_status_rules() -> None:
         == "EXPIRED"
     )
     assert link_status(ConsentLink(expires_at=now - timedelta(days=1), used_at=now), now).value == "USED"
+
+
+# --- Checks en null y nombre del Dealer ---
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"personalDataConsent": True, "marketingConsentYMDP": None, "marketingConsentDEALER": None},
+        {"personalDataConsent": True},
+    ],
+)
+async def test_null_or_missing_checks_are_stored_as_false(
+    public_client: httpx.AsyncClient,
+    token: str,
+    session_factory: Sessions,
+    dispatched: list,
+    answers: dict[str, Any],
+) -> None:
+    assert (await submit(public_client, token, answers)).json() == {"status": "ACEPTADO"}
+    consent = await get_consent(session_factory, "TRX-1")
+    assert (
+        consent.consent_personal_data,
+        consent.consent_marketing_yamaha,
+        consent.consent_marketing_dealer,
+    ) == (
+        True,
+        False,
+        False,
+    )
+    (notification,) = await all_rows(session_factory, KizunaNotification)
+    assert (notification.payload["marketingConsentYMDP"], notification.payload["marketingConsentDEALER"]) == (
+        False,
+        False,
+    )
+    # La evidencia guarda lo que llegó (null).
+    (evidence,) = await all_rows(session_factory, ConsentEvidence)
+    assert evidence.answers == {
+        "personalDataConsent": True,
+        "marketingConsentYMDP": None,
+        "marketingConsentDEALER": None,
+    }
+
+
+async def test_null_personal_data_is_a_rejection(
+    public_client: httpx.AsyncClient, token: str, session_factory: Sessions, dispatched: list
+) -> None:
+    response = await submit(public_client, token, {"personalDataConsent": None})
+    assert response.json() == {"status": "NO_ACEPTADO"}
+    consent = await get_consent(session_factory, "TRX-1")
+    assert (consent.consent_personal_data, consent.is_deleted) == (False, 1)
+
+
+async def test_link_without_dealer_name_returns_null(
+    public_client: httpx.AsyncClient, whatsapp_sender: RecordingWhatsAppSender
+) -> None:
+    token = await create_consent(public_client, whatsapp_sender, IdentifierId="TRX-9", dealerName=None)
+    assert (await public_client.get(link_url(token))).json()["dealerName"] is None

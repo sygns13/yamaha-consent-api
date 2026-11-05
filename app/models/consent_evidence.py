@@ -26,6 +26,6 @@ class ConsentEvidence(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     policy_version: Mapped[str] = mapped_column(String(20), nullable=False)
     policy_url: Mapped[str] = mapped_column(Text, nullable=False)
-    # {"personal_data": bool, "marketing_yamaha": bool, "marketing_dealer": bool}
+    # {"personalDataConsent": bool | null, "marketingConsentYMDP": bool | null, "marketingConsentDEALER": bool | null}
     answers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

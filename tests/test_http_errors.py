@@ -1,6 +1,7 @@
 """Errores HTTP que no son de validación: en español y en JSON."""
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -157,11 +158,11 @@ def test_app_engine_hides_sql_parameters() -> None:
 async def test_integrity_error_message_has_no_personal_data(db_engine: AsyncEngine) -> None:
     row: dict[str, Any] = {
         "transaction_id": "TRX-DUP",
-        "document_type": "DNI",
-        "document_number": "12345678",
-        "dealer": "D",
+        "customer_id": "12345678",
+        "dealer_code": "D",
         "full_name": "JUAN SECRETO",
         "phone": "987654321",
+        "requested_at": datetime.now(UTC),
     }
     async with db_engine.begin() as conn:
         await conn.execute(insert(Consent).values(**row))

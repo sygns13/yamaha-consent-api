@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -20,9 +21,10 @@ from app.core.config import Settings
 from app.integrations.kizuna_client import (
     KizunaClient,
     KizunaConfigurationError,
+    build_kizuna_payload,
     check_kizuna_settings,
 )
-from app.models import Consent, ConsentStatus, DocumentType, KizunaNotification, NotificationStatus
+from app.models import Consent, ConsentStatus, KizunaNotification, NotificationStatus
 from app.services.kizuna_notifications import (
     REPROCESS_CONCURRENCY,
     KizunaNotifier,
@@ -37,15 +39,16 @@ from tests.db_helpers import Sessions, all_rows, count, get_consent
 CALLBACK_URL = "http://kizuna-mock:8081/kizuna/consent-result"
 API_KEY_HEADER = {"X-API-Key": "test-api-key"}
 BODY: dict[str, Any] = {
-    "transaction_id": "TRX-1",
-    "document_type": "DNI",
-    "document_number": "12345678",
-    "full_name": "juan pérez",
-    "phone": "987654321",
-    "dealer": "DEALER-001",
+    "IdentifierId": "TRX-1",
+    "customerId": "12345678",
+    "customerName": "juan pérez",
+    "customerPhone": "987654321",
+    "dealerName": "ABC Motors",
+    "dealerCode": "DEALER-001",
 }
-ACCEPT = {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True}
-REJECT = {"personal_data": False, "marketing_yamaha": True, "marketing_dealer": True}
+ACCEPT = {"personalDataConsent": True, "marketingConsentYMDP": False, "marketingConsentDEALER": True}
+REJECT = {"personalDataConsent": False, "marketingConsentYMDP": True, "marketingConsentDEALER": True}
+LIMA = ZoneInfo("America/Lima")
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +116,9 @@ def use_transport(
 async def register(
     client: httpx.AsyncClient, sender: RecordingWhatsAppSender, **overrides: Any
 ) -> httpx.Response:
-    response = await client.post("/api/v1/consents", json={**BODY, **overrides}, headers=API_KEY_HEADER)
+    response = await client.post(
+        "/api/v1/consents", json={"_request": {**BODY, **overrides}}, headers=API_KEY_HEADER
+    )
     assert response.status_code in (200, 201), response.text
     return response
 
@@ -141,17 +146,17 @@ async def create_notification(
     sessions: Sessions,
     settings: Settings,
     transaction_id: str = "TRX-1",
-    document_number: str = "12345678",
+    customer_id: str = "12345678",
 ) -> uuid.UUID:
     """Registro ACEPTADO con su notificación PENDIENTE, sin pasar por la API."""
     async with sessions.begin() as session:
         consent = Consent(
             transaction_id=transaction_id,
-            document_type=DocumentType.DNI,
-            document_number=document_number,
-            dealer="DEALER-001",
+            customer_id=customer_id,
+            dealer_code="DEALER-001",
             full_name="JUAN PÉREZ",
             phone="987654321",
+            requested_at=datetime(2026, 11, 5, 15, 0, tzinfo=UTC),
             status=ConsentStatus.ACEPTADO,
             consent_personal_data=True,
             consent_marketing_yamaha=False,
@@ -283,18 +288,19 @@ async def test_submit_sends_the_answer_to_kizuna(
     )
     assert sleeps == []
     consent = await get_consent(session_factory, "TRX-1")
+    # Contrato de KIZUNA; consentDateTime con la hora de Lima.
     assert mock_state.received[0]["payload"] == {
-        "transaction_id": "TRX-1",
-        "document_type": "DNI",
-        "document_number": "12345678",
-        "dealer": "DEALER-001",
-        "status": "ACEPTADO",
-        "consents": {"personal_data": True, "marketing_yamaha": False, "marketing_dealer": True},
-        "responded_at": consent.responded_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "IdentifierId": "TRX-1",
+        "customerId": "12345678",
+        "dealerCode": "DEALER-001",
+        "consentDateTime": consent.responded_at.astimezone(LIMA).isoformat(timespec="seconds"),
+        "personalDataConsent": True,
+        "marketingConsentYMDP": False,
+        "marketingConsentDEALER": True,
     }
 
 
-async def test_rejection_reaches_kizuna_with_marketing_null(
+async def test_rejection_reaches_kizuna_with_marketing_false(
     api_client: httpx.AsyncClient,
     whatsapp_sender: RecordingWhatsAppSender,
     use_transport: Callable,
@@ -302,12 +308,16 @@ async def test_rejection_reaches_kizuna_with_marketing_null(
 ) -> None:
     await answered(api_client, whatsapp_sender, REJECT)
     (received,) = mock_state.received
-    assert received["payload"]["status"] == "NO_ACEPTADO"
-    assert received["payload"]["consents"] == {
-        "personal_data": False,
-        "marketing_yamaha": None,
-        "marketing_dealer": None,
-    }
+    payload = received["payload"]
+    assert (
+        payload["personalDataConsent"],
+        payload["marketingConsentYMDP"],
+        payload["marketingConsentDEALER"],
+    ) == (
+        False,
+        False,
+        False,
+    )
 
 
 async def test_kizuna_failure_does_not_affect_the_customer_response(
@@ -338,13 +348,13 @@ async def test_each_transaction_id_gets_its_own_callback(
 ) -> None:
     await register(api_client, whatsapp_sender)
     token = whatsapp_sender.calls[-1]["token"]
-    await register(api_client, whatsapp_sender, transaction_id="TRX-2")
-    await register(api_client, whatsapp_sender, transaction_id="TRX-3")
+    await register(api_client, whatsapp_sender, IdentifierId="TRX-2")
+    await register(api_client, whatsapp_sender, IdentifierId="TRX-3")
     await submit(api_client, token, ACCEPT)
 
-    received_ids = sorted(item["payload"]["transaction_id"] for item in mock_state.received)
+    received_ids = sorted(item["payload"]["IdentifierId"] for item in mock_state.received)
     assert received_ids == ["TRX-1", "TRX-2", "TRX-3"]
-    assert {item["payload"]["status"] for item in mock_state.received} == {"ACEPTADO"}
+    assert {item["payload"]["personalDataConsent"] for item in mock_state.received} == {True}
     stored = await notifications(session_factory)
     assert {tid: n.status for tid, n in stored.items()} == {
         "TRX-1": NotificationStatus.ENVIADO,
@@ -367,7 +377,7 @@ async def test_retries_are_independent_per_transaction_id(
     use_transport(httpx.MockTransport(handler))
     await register(api_client, whatsapp_sender)
     token = whatsapp_sender.calls[-1]["token"]
-    await register(api_client, whatsapp_sender, transaction_id="TRX-2")
+    await register(api_client, whatsapp_sender, IdentifierId="TRX-2")
     await submit(api_client, token, ACCEPT)
 
     stored = await notifications(session_factory)
@@ -383,7 +393,7 @@ async def test_copy_born_answered_is_notified_by_post_consents(
     mock_state: kizuna_mock.MockState,
 ) -> None:
     await answered(api_client, whatsapp_sender, ACCEPT)
-    response = await register(api_client, whatsapp_sender, transaction_id="TRX-2")
+    response = await register(api_client, whatsapp_sender, IdentifierId="TRX-2")
     assert response.status_code == 200
     assert response.json()["status"] == "ACEPTADO"
 
@@ -391,17 +401,14 @@ async def test_copy_born_answered_is_notified_by_post_consents(
     stored = await notifications(session_factory)
     assert stored["TRX-2"].status == NotificationStatus.ENVIADO
     primary = await get_consent(session_factory, "TRX-1")
-    copy_payload = next(
-        i["payload"] for i in mock_state.received if i["payload"]["transaction_id"] == "TRX-2"
-    )
-    assert copy_payload["status"] == "ACEPTADO"
-    assert copy_payload["consents"] == {
-        "personal_data": True,
-        "marketing_yamaha": False,
-        "marketing_dealer": True,
-    }
-    assert copy_payload["responded_at"] == primary.responded_at.astimezone(UTC).isoformat().replace(
-        "+00:00", "Z"
+    copy_payload = next(i["payload"] for i in mock_state.received if i["payload"]["IdentifierId"] == "TRX-2")
+    assert (
+        copy_payload["personalDataConsent"],
+        copy_payload["marketingConsentYMDP"],
+        copy_payload["marketingConsentDEALER"],
+    ) == (True, False, True)
+    assert copy_payload["consentDateTime"] == primary.responded_at.astimezone(LIMA).isoformat(
+        timespec="seconds"
     )
 
 
@@ -413,7 +420,7 @@ async def test_pending_copy_is_not_notified_on_creation(
     mock_state: kizuna_mock.MockState,
 ) -> None:
     await register(api_client, whatsapp_sender)
-    await register(api_client, whatsapp_sender, transaction_id="TRX-2")
+    await register(api_client, whatsapp_sender, IdentifierId="TRX-2")
     # Todavía no hay respuesta: la copia se notifica cuando el cliente conteste (paso 7 y 8 del submit).
     assert await count(session_factory, KizunaNotification) == 0
     assert mock_state.total_requests == 0
@@ -707,10 +714,8 @@ async def get_notification(sessions: Sessions, notification_id: uuid.UUID) -> Ki
 
 async def create_many(sessions: Sessions, settings: Settings, count: int) -> list[uuid.UUID]:
     return [
-        await (  # Un cliente distinto por notificación: solo puede haber un principal activo por documento + Dealer.
-            create_notification(
-                sessions, settings, transaction_id=f"TRX-{i}", document_number=f"{10000000 + i}"
-            )
+        await (  # Un cliente distinto por notificación: solo puede haber un principal activo por cliente + Dealer.
+            create_notification(sessions, settings, transaction_id=f"TRX-{i}", customer_id=f"{10000000 + i}")
         )
         for i in range(count)
     ]
@@ -807,7 +812,7 @@ async def test_reprocess_sends_everything_accumulated_while_disabled(
     assert {n.status for n in await all_rows(session_factory, KizunaNotification)} == {
         NotificationStatus.ENVIADO
     }
-    assert sorted(item["payload"]["transaction_id"] for item in mock_state.received) == [
+    assert sorted(item["payload"]["IdentifierId"] for item in mock_state.received) == [
         "TRX-0",
         "TRX-1",
         "TRX-2",
@@ -835,7 +840,7 @@ async def test_reprocess_takes_expired_claims_and_skips_recent_ones(
     retaken = await get_notification(session_factory, abandoned)
     # Sigue contando sus intentos anteriores.
     assert (retaken.status, retaken.attempts) == (NotificationStatus.ENVIADO, 3)
-    assert [item["payload"]["transaction_id"] for item in mock_state.received] == ["TRX-1"]
+    assert [item["payload"]["IdentifierId"] for item in mock_state.received] == ["TRX-1"]
 
 
 async def test_reprocess_respects_reprocess_after_minutes(
@@ -887,7 +892,7 @@ async def test_two_instances_reprocessing_at_once_send_each_notification_once(
 
     assert sum(claimed) == 8
     assert mock_state.total_requests == 8
-    assert sorted(item["payload"]["transaction_id"] for item in mock_state.received) == [
+    assert sorted(item["payload"]["IdentifierId"] for item in mock_state.received) == [
         f"TRX-{i}" for i in range(8)
     ]
 
@@ -998,3 +1003,51 @@ def test_startup_warning_when_reprocess_window_is_too_short(caplog: pytest.LogCa
     with caplog.at_level(logging.WARNING, logger="app.integrations.kizuna_client"):
         check_kizuna_settings(settings)
     assert any("podría enviarse dos veces" in r.getMessage() for r in caplog.records)
+
+
+# --- build_kizuna_payload ---
+
+
+def test_payload_never_sends_null_checks_and_uses_lima_time() -> None:
+    consent = Consent(
+        transaction_id="100002001",
+        customer_id="76299887",
+        dealer_code="CL0001",
+        consent_personal_data=True,
+        consent_marketing_yamaha=None,
+        consent_marketing_dealer=None,
+        responded_at=datetime(2026, 11, 2, 18, 35, tzinfo=UTC),
+        is_deleted=0,
+    )
+    assert build_kizuna_payload(consent, LIMA) == {
+        "IdentifierId": "100002001",
+        "customerId": "76299887",
+        "dealerCode": "CL0001",
+        "consentDateTime": "2026-11-02T13:35:00-05:00",
+        "personalDataConsent": True,
+        "marketingConsentYMDP": False,
+        "marketingConsentDEALER": False,
+    }
+
+
+def test_payload_of_a_deleted_record_never_sends_marketing_true() -> None:
+    consent = Consent(
+        transaction_id="T",
+        customer_id="1",
+        dealer_code="D",
+        consent_personal_data=False,
+        consent_marketing_yamaha=True,
+        consent_marketing_dealer=True,
+        responded_at=datetime(2026, 11, 2, tzinfo=UTC),
+        is_deleted=1,
+    )
+    payload = build_kizuna_payload(consent, LIMA)
+    assert (
+        payload["personalDataConsent"],
+        payload["marketingConsentYMDP"],
+        payload["marketingConsentDEALER"],
+    ) == (
+        False,
+        False,
+        False,
+    )

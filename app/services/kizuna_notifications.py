@@ -49,7 +49,7 @@ async def enqueue_notifications(
     notifications = [
         KizunaNotification(
             transaction_id=consent.transaction_id,
-            payload=build_kizuna_payload(consent),
+            payload=build_kizuna_payload(consent, settings.kizuna_zone),
             target_url=settings.kizuna_callback_url,
             status=NotificationStatus.PENDIENTE,
             attempts=0,

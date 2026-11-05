@@ -20,7 +20,7 @@ from app.services.consent_links import (
     LinkNotFoundError,
     LinkUnavailableError,
     SubmissionEvidence,
-    get_link_status,
+    get_link_info,
     submit_consent,
 )
 from app.services.kizuna_notifications import KizunaNotifier, get_kizuna_notifier
@@ -53,11 +53,15 @@ _NOT_FOUND_RESPONSE = {
     responses=_NOT_FOUND_RESPONSE,
 )
 async def read_consent_link(token: str, session: SessionDep, settings: SettingsDep) -> ConsentLinkInfo:
-    """`link_status`: VALID, EXPIRED o USED (un enlace vencido o usado responde 200; la landing lo trata)."""
-    link_status = await get_link_status(session, token)
-    if link_status is None:
+    """`linkStatus`: VALID, EXPIRED o USED (un enlace vencido o usado responde 200; la landing lo trata)."""
+    info = await get_link_info(session, token)
+    if info is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=LINK_NOT_FOUND)
-    return ConsentLinkInfo(link_status=link_status, privacy_policy_url=settings.privacy_policy_url or None)
+    return ConsentLinkInfo(
+        link_status=info.status,
+        privacy_policy_url=settings.privacy_policy_url or None,
+        dealer_name=info.dealer_name,
+    )
 
 
 @router.post(
@@ -78,7 +82,8 @@ async def submit_consent_link(
     settings: SettingsDep,
     notifier: NotifierDep,
 ) -> ConsentSubmitResponse | JSONResponse:
-    """Con `personal_data` en false se registra el rechazo (RN-01): no es un error, responde 200 NO_ACEPTADO."""
+    """Con `personalDataConsent` en false (o null) se registra el rechazo (RN-01): no es un error, responde 200
+    NO_ACEPTADO. Un check en null se registra como false."""
     evidence = SubmissionEvidence(
         ip_address=client_ip(
             request.headers.get("x-forwarded-for"), request.client.host if request.client else None
@@ -91,7 +96,7 @@ async def submit_consent_link(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=LINK_NOT_FOUND) from None
     except LinkUnavailableError as exc:
         gone = LinkGoneResponse(detail=LINK_GONE[exc.link_status], link_status=exc.link_status.value)
-        return JSONResponse(status_code=status.HTTP_410_GONE, content=gone.model_dump())
+        return JSONResponse(status_code=status.HTTP_410_GONE, content=gone.model_dump(by_alias=True))
 
     # Paso 8 (M5): una respuesta a KIZUNA por cada ID de transacción, después del commit (submit_consent ya terminó
     # su transacción) y después de responder al cliente.

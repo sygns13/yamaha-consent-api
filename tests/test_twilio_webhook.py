@@ -45,12 +45,13 @@ async def sent_message(
     response = await api_client.post(
         "/api/v1/consents",
         json={
-            "transaction_id": "TRX-W1",
-            "document_type": "DNI",
-            "document_number": "12345678",
-            "full_name": "juan pérez",
-            "phone": "987654321",
-            "dealer": "DEALER-001",
+            "_request": {
+                "IdentifierId": "TRX-W1",
+                "customerId": "12345678",
+                "customerName": "juan pérez",
+                "customerPhone": "987654321",
+                "dealerCode": "DEALER-001",
+            }
         },
     )
     assert response.status_code == 201

@@ -4,7 +4,7 @@
 |---|---|
 | Cliente | Yamaha – Perú |
 | Proveedor / Responsable técnico | Cristian Fernando Chávez Torres |
-| Versión del documento | 1.3 — 27/10/2026 (incorpora las decisiones de la sección 11) |
+| Versión del documento | 1.4 — 05/11/2026 (contrato de KIZUNA; incorpora las decisiones de la sección 11) |
 | Nube | Google Cloud (proyecto provisto por Yamaha). **Base de datos, backend y landing se despliegan en Google Cloud** |
 | Stack | Python + FastAPI · PostgreSQL (Cloud SQL) · Astro · Twilio WhatsApp |
 | Ambiente | Solo Producción (desarrollo y pruebas en local) |
@@ -20,7 +20,7 @@ Este documento es la **fuente de verdad** para construir la solución. Si trabaj
 3. Todo valor marcado como **configurable** se lee de variables de entorno (sección 9). Nunca lo escribas fijo en el código.
 4. Lo marcado como **(propuesta)** es una recomendación técnica que el responsable aprobó como punto de partida; puede cambiar.
 5. Convención: **código, nombres de tablas y campos en inglés**; **textos visibles al usuario en español**.
-6. **Nunca** escribas datos personales (documento, nombre, teléfono, IP) en logs sin enmascarar.
+6. **Nunca** escribas datos personales (identificador del cliente, nombre, teléfono, correo, IP) en logs sin enmascarar.
 
 ---
 
@@ -55,9 +55,9 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 |---|---|---|
 | RN-01 | **Prevalece sobre el mockup.** El cliente **puede enviar sin marcar ningún check**. Si el check 1 (Tratamiento de Datos Personales) queda desmarcado, el estado final es **NO ACEPTADO**: se aplica **borrado lógico** (`is_deleted = 1`), se **anula el nombre del cliente** (el teléfono se conserva por trazabilidad) y no se conservan las respuestas de marketing. Se notifica a KIZUNA. | Backend (M4, M5) · Landing (M6) |
 | RN-02 | Conformidad vigente para el mismo Dealer. | **KIZUNA — no aplica a este desarrollo** |
-| RN-03 | La conformidad está asociada al Dealer. Un mismo documento con **otro Dealer** genera un registro nuevo, un WhatsApp nuevo y un enlace nuevo. | Backend (M2) |
-| RN-04 | Si llega información de un cliente con un **registro activo** (`is_deleted = 0`) para el mismo Dealer, se **actualizan los datos del cliente** (nombre, teléfono, información adicional) en ese registro, **no** se reenvía el WhatsApp y sus conformidades se mantienen. Si llega con un **nuevo ID de transacción**, ese ID **se registra como copia vinculada** del registro activo (sin enlace ni WhatsApp) con las respuestas que el cliente ya dio; si el cliente aún no responde, la copia queda `PENDIENTE` y **recibe la respuesta** cuando el cliente conteste en el registro original. KIZUNA recibe **una respuesta final por cada ID de transacción**. | Backend (M2, M4, M5) |
-| RN-05 | **Nueva compra tras un rechazo:** si el único registro previo del documento + Dealer está borrado lógicamente (NO ACEPTADO), se crea un **registro nuevo** con el nuevo ID de transacción y se envía un **nuevo WhatsApp** para que el cliente pueda aceptar. Por eso el documento + Dealer **no es único**: la **PK es el ID de transacción**. | Backend (M2) |
+| RN-03 | La conformidad está asociada al Dealer. Un mismo cliente (`customerId`) con **otro Dealer** (`dealerCode`) genera un registro nuevo, un WhatsApp nuevo y un enlace nuevo. | Backend (M2) |
+| RN-04 | Si llega información de un cliente con un **registro activo** (`is_deleted = 0`) para el mismo Dealer, se **actualizan los datos del cliente** (nombre, teléfono, correo, nombre del Dealer, información adicional) en ese registro, **no** se reenvía el WhatsApp y sus conformidades se mantienen. Si llega con un **nuevo ID de transacción**, ese ID **se registra como copia vinculada** del registro activo (sin enlace ni WhatsApp) con las respuestas que el cliente ya dio; si el cliente aún no responde, la copia queda `PENDIENTE` y **recibe la respuesta** cuando el cliente conteste en el registro original. KIZUNA recibe **una respuesta final por cada ID de transacción**. | Backend (M2, M4, M5) |
+| RN-05 | **Nueva compra tras un rechazo:** si el único registro previo del cliente + Dealer está borrado lógicamente (NO ACEPTADO), se crea un **registro nuevo** con el nuevo ID de transacción y se envía un **nuevo WhatsApp** para que el cliente pueda aceptar. Por eso el cliente + Dealer **no es único**: la **PK es el ID de transacción**. | Backend (M2) |
 
 ### 1.4 Diagramas y mockups de referencia
 
@@ -180,8 +180,8 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 ### Requerimientos
 
-- Fechas en `timestamptz` y almacenadas en **UTC**. En las respuestas de la API se devuelven en ISO 8601.
-- La PK de `consents` es el **`transaction_id`** que envía KIZUNA. Las demás tablas usan PK `UUID` generada en la aplicación (`uuid4`) y se relacionan con `consents` por `transaction_id`.
+- Fechas en `timestamptz` y almacenadas en **UTC**. En las respuestas de la API y en el callback se devuelven en ISO 8601 con el offset de `KIZUNA_TIMEZONE` (por defecto `America/Lima`, `-05:00`).
+- La PK de `consents` es el **`transaction_id`** (el `IdentifierId` que envía KIZUNA). Las demás tablas usan PK `UUID` generada en la aplicación (`uuid4`) y se relacionan con `consents` por `transaction_id`.
 - Todas las tablas llevan `created_at` y `updated_at`.
 - **Borrado lógico:** columna `is_deleted` de tipo `SMALLINT NOT NULL DEFAULT 0` con `CHECK (is_deleted IN (0,1))`. Es el equivalente de `TINYINT` en PostgreSQL: `0` = vigente, `1` = borrado.
 
@@ -189,7 +189,6 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 | Enum | Valores |
 |---|---|
-| `document_type` | `DNI`, `RUC`, `CE` (Carné de extranjería), `PASAPORTE`, `OTROS` |
 | `consent_status` | `PENDIENTE`, `ACEPTADO`, `NO_ACEPTADO` |
 | `whatsapp_status` | `queued`, `sent`, `delivered`, `read`, `failed`, `undelivered` (los valores de Twilio) |
 | `notification_status` | `PENDIENTE`, `ENVIADO`, `FALLIDO` |
@@ -198,29 +197,31 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 | Campo | Tipo | Nulo | Descripción |
 |---|---|---|---|
-| `transaction_id` | varchar(100) **PK** | no | ID único de la transacción enviado por KIZUNA |
-| `document_type` | document_type | no | Se conserva siempre |
-| `document_number` | varchar(20) | no | Normalizado (sección M2). Se conserva siempre |
-| `dealer` | varchar(100) | no | Se conserva siempre. ⚠️ PENDIENTE-05 (¿código, nombre o ambos?) |
-| `full_name` | varchar(250) | **sí** | Normalizado. **Se anula en el borrado lógico (RN-01)** |
-| `phone` | char(9) | no | 9 dígitos, sin prefijo de país. **Se conserva siempre, por trazabilidad** (también tras el rechazo) |
-| `additional_info` | jsonb | sí | Campo libre para futuras integraciones (hoy sin campos definidos) |
+| `transaction_id` | varchar(100) **PK** | no | ID único de la transacción enviado por KIZUNA (`IdentifierId`) |
+| `customer_id` | varchar(20) | no | Identificador del cliente (`customerId`), normalizado (sección M2). Sin tipo de documento. Se conserva siempre |
+| `dealer_code` | varchar(100) | no | Código del Dealer (`dealerCode`). Junto con `customer_id` identifica al cliente. Se conserva siempre |
+| `dealer_name` | varchar(150) | sí | Nombre del Dealer (`dealerName`); se muestra en la landing. Se actualiza en RN-04 si llega |
+| `full_name` | varchar(250) | **sí** | Normalizado (`customerName`). **Se anula en el borrado lógico (RN-01)** |
+| `phone` | char(9) | no | 9 dígitos, sin prefijo de país (`customerPhone`). **Se conserva siempre, por trazabilidad** (también tras el rechazo) |
+| `email` | varchar(254) | sí | `customerEmail`. Opcional; un correo inválido se guarda como `null` (nunca rechaza la solicitud). Se actualiza en RN-04 si llega |
+| `requested_at` | timestamptz | no | `requestDateTime` de KIZUNA (cualquier offset); si no llega, la hora del sistema al recibir la solicitud |
+| `additional_info` | jsonb | sí | `additionalInfo`: campo libre para futuras integraciones (hoy sin campos definidos) |
 | `status` | consent_status | no | Por defecto `PENDIENTE` |
-| `consent_personal_data` | boolean | sí | Check 1 |
-| `consent_marketing_yamaha` | boolean | sí | Check 2. Se anula en RN-01 (no se conservan las respuestas de marketing) |
-| `consent_marketing_dealer` | boolean | sí | Check 3. Se anula en RN-01 |
+| `consent_personal_data` | boolean | sí | Check 1. Nulo solo mientras está `PENDIENTE`; un check que llega `null` se guarda `false` |
+| `consent_marketing_yamaha` | boolean | sí | Check 2. En RN-01 se guarda `false` (no se conservan las respuestas de marketing) |
+| `consent_marketing_dealer` | boolean | sí | Check 3. En RN-01 se guarda `false` |
 | `responded_at` | timestamptz | sí | Fecha y hora de aceptación o rechazo |
 | `is_deleted` | smallint | no | `0` por defecto; `1` = borrado lógico. `CHECK (is_deleted IN (0,1))` |
 | `deleted_at` | timestamptz | sí | |
 | `source_transaction_id` | varchar(100) FK → consents | sí | Solo en **copias vinculadas** (RN-04 con un ID nuevo): registro principal del que copia las respuestas. Nulo en los registros principales. `CHECK (source_transaction_id <> transaction_id)` |
 | `created_at` / `updated_at` | timestamptz | no | |
 
-- **Sin restricción única** sobre documento + Dealer: un mismo cliente puede tener varios registros con el mismo Dealer (RN-05).
-- **Índices:** `(document_type, document_number, dealer, is_deleted)`, `status`, `created_at`, `source_transaction_id`.
+- **Sin restricción única** sobre `customer_id` + `dealer_code`: un mismo cliente puede tener varios registros con el mismo Dealer (RN-05).
+- **Índices:** `(customer_id, dealer_code, is_deleted)`, `status`, `created_at`, `source_transaction_id`.
 - **Dos clases de registro:**
   - **Principal** (`source_transaction_id` nulo): tiene su enlace (`consent_links`) y su WhatsApp; el cliente responde en él.
   - **Copia vinculada** (`source_transaction_id` con el ID del principal): se crea en RN-04 con un ID de transacción nuevo. No tiene enlace ni WhatsApp; copia el estado y las respuestas del principal.
-- **Registro activo** de un documento + Dealer: el **principal** más reciente con `is_deleted = 0`. Se garantiza que haya **como máximo uno** con el índice único parcial `uq_consents_active_document_dealer` `WHERE is_deleted = 0 AND source_transaction_id IS NULL`. Las copias vinculadas activas no cuentan.
+- **Registro activo** de un cliente + Dealer: el **principal** más reciente con `is_deleted = 0`. Se garantiza que haya **como máximo uno** con el índice único parcial `uq_consents_active_customer_dealer` `WHERE is_deleted = 0 AND source_transaction_id IS NULL`. Las copias vinculadas activas no cuentan.
 
 ### Tabla `consent_requests` (historial de solicitudes recibidas desde KIZUNA)
 
@@ -256,7 +257,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 | `user_agent` | text | |
 | `policy_version` | varchar(20) | `PRIVACY_POLICY_VERSION` |
 | `policy_url` | text | `PRIVACY_POLICY_URL` |
-| `answers` | jsonb | `{"personal_data":bool,"marketing_yamaha":bool,"marketing_dealer":bool}`, exactamente lo que envió el cliente (también en un rechazo) |
+| `answers` | jsonb | `{"personalDataConsent":bool,"marketingConsentYMDP":bool,"marketingConsentDEALER":bool}`, exactamente lo que envió el cliente (también en un rechazo y los `null`) |
 | `submitted_at` | timestamptz | |
 
 > **Decisión:** el borrado lógico **no** afecta esta tabla ni `whatsapp_messages`; solo se anula el nombre del cliente en `consents`.
@@ -302,9 +303,10 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 - `alembic upgrade head` crea todo el esquema en una base vacía; `alembic downgrade base` lo revierte.
 - `consents.transaction_id` es PK: insertar dos veces el mismo ID de transacción falla.
-- Se pueden insertar dos registros con el mismo documento + Dealer si el anterior tiene `is_deleted = 1`.
-- Se pueden insertar copias vinculadas activas junto al registro principal activo; dos principales activos del mismo documento + Dealer fallan.
+- Se pueden insertar dos registros con el mismo cliente + Dealer si el anterior tiene `is_deleted = 1`.
+- Se pueden insertar copias vinculadas activas junto al registro principal activo; dos principales activos del mismo cliente + Dealer fallan.
 - `is_deleted` rechaza valores distintos de 0 y 1.
+- La migración `b7c2d9e41f60` aplica el contrato de KIZUNA (v1.4): quita `document_type`, renombra `document_number` → `customer_id` y `dealer` → `dealer_code`, agrega `dealer_name`, `email` y `requested_at`, pasa a `false` el marketing nulo de los registros con respuesta y rearma el payload de las notificaciones `PENDIENTE`.
 
 ---
 
@@ -328,16 +330,19 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 
 | Campo | Normalización | Validación |
 |---|---|---|
-| `document_type` | Mayúsculas | Debe estar en el enum |
-| `document_number` | Trim, quitar espacios y guiones, mayúsculas | DNI: 8 dígitos · RUC: 11 dígitos · CE: alfanumérico, máximo 12 · PASAPORTE: alfanumérico, máximo 12 · OTROS: alfanumérico, máximo 20 **(propuesta)**. *Alfanumérico* = letras A–Z, **Ñ** y dígitos 0–9 (sin tildes) |
-| `full_name` | Trim, colapsar espacios múltiples, **MAYÚSCULAS conservando tildes y Ñ** (`str.upper()`) | No vacío, máximo 250 |
-| `phone` | Quitar todo lo que no sea dígito; si quedan 11 dígitos y empieza con `51`, quitar `51` | Exactamente **9 dígitos** (formato `XXXXXXXXX`) |
-| `dealer` | Trim | No vacío (⚠️ PENDIENTE-05) |
-| `additional_info` | — | Objeto JSON opcional |
+| `IdentifierId` | — (se guarda tal cual) | Obligatorio, no vacío, máximo 100 |
+| `customerId` | Trim, quitar espacios y guiones, mayúsculas | Obligatorio. Alfanumérico, máximo 20. *Alfanumérico* = letras A–Z, **Ñ** y dígitos 0–9 (sin tildes). Sin tipo de documento |
+| `customerName` | Trim, colapsar espacios múltiples, **MAYÚSCULAS conservando tildes y Ñ** (`str.upper()`) | Obligatorio, no vacío, máximo 250 |
+| `customerPhone` | Quitar todo lo que no sea dígito; si quedan 11 dígitos y empieza con `51`, quitar `51` | Obligatorio. Exactamente **9 dígitos** (formato `XXXXXXXXX`) |
+| `customerEmail` | Trim, minúsculas | Opcional. **Nunca rechaza la solicitud**: vacío, no texto o con formato inválido → `null` (log `WARNING` sin el valor) |
+| `dealerCode` | Trim | Obligatorio, no vacío, máximo 100 |
+| `dealerName` | Trim, colapsar espacios | Opcional; no rechaza la solicitud (no texto → `null`; más de 150 caracteres se recorta) |
+| `requestDateTime` | — | Opcional. ISO 8601 con **cualquier offset**; sin offset se interpreta en `KIZUNA_TIMEZONE`. Si no llega, la hora del sistema. Formato inválido → `422` |
+| `additionalInfo` | — | Objeto JSON opcional |
 
 > Al enviar por Twilio, el teléfono se arma como `whatsapp:+51` + `phone`. ⚠️ PENDIENTE-10: los números extranjeros no son compatibles con la regla de 9 dígitos.
 
-Un error de validación responde `422` con el detalle del campo: `{"detail": [{"type": "...", "loc": ["body", "phone"], "msg": "..."}]}`. Los mensajes (`msg`) están **en español**, incluidos los que genera Pydantic. La respuesta **no** devuelve el valor recibido (`input`), porque puede ser un dato personal.
+Un error de validación responde `422` con el detalle del campo: `{"detail": [{"type": "...", "loc": ["body", "_request", "customerPhone"], "msg": "..."}]}`. Los campos desconocidos se ignoran. Los mensajes (`msg`) están **en español**, incluidos los que genera Pydantic. La respuesta **no** devuelve el valor recibido (`input`), porque puede ser un dato personal.
 
 **Otros errores HTTP**, también en español y en JSON (`{"detail": "..."}`). Se traducen los textos que generan FastAPI y Starlette; los mensajes propios en español pasan sin cambios:
 
@@ -353,35 +358,40 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 
 ### 2.3 `POST /api/v1/consents` — recepción desde KIZUNA (requiere API Key)
 
-**Request**
+**Request** (contrato de KIZUNA: los datos van dentro de `_request`; los nombres de los campos en JSON son los de KIZUNA y en el código se usan los de las columnas)
 ```json
 {
-  "transaction_id": "TRX-000123",
-  "document_type": "DNI",
-  "document_number": "12345678",
-  "full_name": "juan  pérez   gómez",
-  "phone": "+51 987 654 321",
-  "dealer": "DEALER-001",
-  "additional_info": {}
+  "_request": {
+    "IdentifierId": "100002001",
+    "customerId": "76299887",
+    "customerName": "Nombre",
+    "customerPhone": "+51999111222",
+    "customerEmail": "nombre@email.com",
+    "dealerName": "ABC Motors",
+    "dealerCode": "CL0001",
+    "requestDateTime": "2026-11-02T10:35:00-05:00"
+  }
 }
 ```
+- Obligatorios: `IdentifierId`, `customerId`, `customerName`, `customerPhone`, `dealerCode`. Opcionales: `customerEmail`, `dealerName`, `requestDateTime`, `additionalInfo`.
+- Sin `_request` → `422`.
 
-**Lógica** (en una transacción, bloqueando por documento + Dealer para evitar duplicados concurrentes)
+**Lógica** (en una transacción, bloqueando por cliente + Dealer para evitar duplicados concurrentes)
 
-- **Bloqueo:** *advisory locks* de PostgreSQL (`pg_advisory_xact_lock`), que se liberan al terminar la transacción: uno por `transaction_id` y otro por documento + Dealer, siempre en ese orden para evitar *deadlocks*. Un `SELECT ... FOR UPDATE` no alcanza, porque en el caso `CREATED` todavía no existe la fila que habría que bloquear. El índice único parcial de M1 queda como red de seguridad.
+- **Bloqueo:** *advisory locks* de PostgreSQL (`pg_advisory_xact_lock`), que se liberan al terminar la transacción: uno por `transaction_id` y otro por `customer_id` + `dealer_code`, siempre en ese orden para evitar *deadlocks*. Un `SELECT ... FOR UPDATE` no alcanza, porque en el caso `CREATED` todavía no existe la fila que habría que bloquear. El índice único parcial de M1 queda como red de seguridad.
 - La lógica vive en `app/services/consents.py`; el router solo traduce el resultado a la respuesta HTTP.
 
 1. Validar y normalizar.
-2. **El `transaction_id` ya existe** (reenvío de la misma transacción) → **RN-04**: actualizar `full_name`, `phone` y `additional_info`, y registrar `consent_requests` (`UPDATED`). Sin enlace ni WhatsApp nuevos. Responder `200`.
-   - Si ese registro tiene `is_deleted = 1` → responder `409` con el estado actual, sin modificar nada **(propuesta)**. Cuerpo: `{"detail": "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato", "transaction_id": "...", "status": "NO_ACEPTADO", "is_deleted": 1}`.
-   - Si el reenvío trae **otro documento u otro Dealer**, se conservan los del registro: solo se actualizan nombre, teléfono e información adicional, y se registra un log `WARNING`.
-3. Buscar el **registro activo** del documento + Dealer (`is_deleted = 0`, el más reciente).
+2. **El `transaction_id` ya existe** (reenvío de la misma transacción) → **RN-04**: actualizar `full_name`, `phone`, `email` y `dealer_name` (estos dos solo si llegan) y `additional_info`, y registrar `consent_requests` (`UPDATED`). Sin enlace ni WhatsApp nuevos. Responder `200`.
+   - Si ese registro tiene `is_deleted = 1` → responder `409` con el estado actual, sin modificar nada **(propuesta)**. Cuerpo: `{"detail": "La transacción ya existe y fue rechazada (NO_ACEPTADO); no se modificó ningún dato", "IdentifierId": "...", "status": "NO_ACEPTADO", "isDeleted": 1}`.
+   - Si el reenvío trae **otro `customerId` u otro `dealerCode`**, se conservan los del registro: solo se actualizan los datos del cliente, y se registra un log `WARNING`.
+3. Buscar el **registro activo** del cliente + Dealer (`customer_id` + `dealer_code`, `is_deleted = 0`, el más reciente).
 4. **Hay registro activo** (principal, pendiente o aceptado) → **RN-04**:
    - Actualizar los datos del cliente en ese registro y registrar `consent_requests` (`UPDATED`, con el nuevo `transaction_id` y la referencia al registro principal). **No** se reenvía WhatsApp y **no** se tocan sus conformidades.
-   - **Registrar el nuevo ID como copia vinculada:** `consents` con el `transaction_id` recibido, `source_transaction_id` = ID del principal, documento y Dealer del principal, nombre, teléfono e información adicional de la solicitud, y **el estado, los tres checks y `responded_at` del principal tal como estén**. Sin enlace ni WhatsApp.
+   - **Registrar el nuevo ID como copia vinculada:** `consents` con el `transaction_id` recibido, `source_transaction_id` = ID del principal, `customer_id`, `dealer_code`, `dealer_name` y `email` del principal, nombre, teléfono, `requested_at` e información adicional de la solicitud, y **el estado, los tres checks y `responded_at` del principal tal como estén**. Sin enlace ni WhatsApp.
      - Si el principal ya fue respondido (`ACEPTADO`), la copia nace con esas respuestas, y KIZUNA recibe también la respuesta final de la copia (M5).
      - Si el principal está `PENDIENTE`, la copia también; recibe la respuesta cuando el cliente conteste en el principal (M4, paso 7).
-   - Responder `200` con `affected_transaction_id` = ID del principal. Las búsquedas del registro activo usan el documento + Dealer y solo consideran principales, así que varios IDs nuevos se vinculan todos al mismo principal (nunca a otra copia).
+   - Responder `200` con `affectedIdentifierId` = ID del principal. Las búsquedas del registro activo usan el cliente + Dealer y solo consideran principales, así que varios IDs nuevos se vinculan todos al mismo principal (nunca a otra copia).
    - El principal se bloquea con `SELECT ... FOR UPDATE`: si en paralelo el cliente está respondiendo (M4), se espera a que termine y la copia nace con la respuesta ya registrada; si la respuesta fue un rechazo, el principal deja de estar activo y se aplica el paso 5 (RN-05).
    - Un **reenvío del ID de una copia** se trata en el paso 2: se actualizan los datos del cliente de esa copia (no los del principal).
 5. **No hay registro activo** (nunca existió, o solo hay registros con `is_deleted = 1` → **RN-05**) → crear `consents` con el `transaction_id` recibido (`PENDIENTE`, `is_deleted = 0`), registrar `consent_requests` (`CREATED`), crear `consent_links` con token nuevo y **enviar el WhatsApp (M3)**. Responder `201`.
@@ -389,60 +399,60 @@ Un error de validación responde `422` con el detalle del campo: `{"detail": [{"
 
 **Detalles de implementación**
 
-- **`additional_info` en una actualización (RN-04):** si la solicitud **no** incluye el campo, se conserva el valor anterior; si lo incluye (aunque sea `null`), se reemplaza.
+- **`additionalInfo` en una actualización (RN-04):** si la solicitud **no** incluye el campo, se conserva el valor anterior; si lo incluye (aunque sea `null`), se reemplaza. `customerEmail` y `dealerName` solo reemplazan el valor anterior si llegan con un valor válido.
 - **El WhatsApp se envía dentro de la transacción**, antes del commit. Si el commit fallara después del envío, KIZUNA reintenta y se crea un enlace nuevo. Separar el envío en otra transacción sería peor: con RN-04, un reintento ya no reenviaría el WhatsApp y el cliente nunca recibiría el enlace.
 - **Token del enlace:** `secrets.token_urlsafe(32)`; en `consent_links` solo se guarda el SHA-256 (`token_hash`) y `expires_at = created_at + LINK_TTL_HOURS`. El token en claro nunca se guarda ni se registra en logs.
 - **Teléfono para el envío:** `whatsapp:+{PHONE_COUNTRY_PREFIX}{phone}`. Se guarda en `whatsapp_messages.to_phone` junto con `TWILIO_CONTENT_SID`.
 - **Envío desacoplado:** el servicio usa la interfaz `WhatsAppSender` (`app/integrations/whatsapp.py`). Hasta M3 la implementación es `FakeWhatsAppSender`, que no envía nada: solo registra en el log (teléfono enmascarado, sin token) y responde `queued`.
 
-**Response**
+**Response** (todas las respuestas de la API van en camelCase, con los nombres de KIZUNA)
 ```json
 {
-  "transaction_id": "TRX-000123",
+  "IdentifierId": "100002001",
   "result": "CREATED",
-  "affected_transaction_id": "TRX-000123",
+  "affectedIdentifierId": "100002001",
   "status": "PENDIENTE",
-  "whatsapp": { "status": "queued", "error_code": null }
+  "whatsapp": { "status": "queued", "errorCode": null }
 }
 ```
 - `result`: `CREATED` | `UPDATED`.
-- `affected_transaction_id`: el registro que se creó o actualizó; en el paso 4 es el ID del registro principal activo (el ID recibido queda registrado como copia vinculada y se puede consultar con `GET /api/v1/consents/{transaction_id}`).
+- `affectedIdentifierId`: el registro que se creó o actualizó; en el paso 4 es el ID del registro principal activo (el ID recibido queda registrado como copia vinculada y se puede consultar con `GET /api/v1/consents/{IdentifierId}`).
 - En el paso 4, `status` es el de la copia recién creada (igual al del principal en ese momento).
 - Si `result` es `UPDATED`, `whatsapp` vale `null`.
 
 ### 2.4 Endpoints de consulta (requieren API Key)
 
-- `GET /api/v1/consents/{transaction_id}` → un registro (`404` si no existe).
-- `GET /api/v1/consents?document_type=DNI&document_number=12345678&dealer=DEALER-001` → **lista** de registros de ese documento (y Dealer, opcional), ordenada por `created_at` descendente (a igual fecha, por `transaction_id` descendente). Incluye los borrados lógicamente y las copias vinculadas. Sin resultados → `200 []`. Sin paginación.
+- `GET /api/v1/consents/{IdentifierId}` → un registro (`404` si no existe).
+- `GET /api/v1/consents?customerId=76299887&dealerCode=CL0001` → **lista** de registros de ese cliente (y Dealer, opcional), ordenada por `created_at` descendente (a igual fecha, por `transaction_id` descendente). Incluye los borrados lógicamente y las copias vinculadas. Sin resultados → `200 []`. Sin paginación.
 - Ambas consultas devuelven también las **copias vinculadas** (RN-04): KIZUNA puede consultar con el ID que envió y obtiene las respuestas que el cliente ya dio (o `PENDIENTE` si aún no responde). La respuesta **no** incluye `source_transaction_id`: el formato es el mismo para principales y copias.
-- El documento de la consulta se normaliza igual que al registrarlo. El `transaction_id` de la ruta se compara exacto.
-- Fechas en ISO 8601 UTC con sufijo `Z` (incluyen microsegundos, p. ej. `2026-10-27T06:14:17.544862Z`).
-- `404 {"detail": "No existe un registro con ese ID de transacción"}` si el ID no existe.
+- El `customerId` de la consulta se normaliza igual que al registrarlo. El `IdentifierId` de la ruta se compara exacto.
+- Fechas en ISO 8601 con el offset de `KIZUNA_TIMEZONE`, sin fracciones de segundo (p. ej. `2026-11-02T13:35:00-05:00`).
+- `404 {"detail": "No existe un registro con ese IdentifierId"}` si el ID no existe.
 
 **Response (un registro)**
 ```json
 {
-  "transaction_id": "TRX-000123",
-  "document_type": "DNI",
-  "document_number": "12345678",
-  "dealer": "DEALER-001",
+  "IdentifierId": "100002001",
+  "customerId": "76299887",
+  "dealerCode": "CL0001",
+  "dealerName": "ABC Motors",
   "status": "ACEPTADO",
-  "consents": {
-    "personal_data": true,
-    "marketing_yamaha": false,
-    "marketing_dealer": true
-  },
-  "responded_at": "2026-11-05T15:20:11Z",
-  "is_deleted": 0,
-  "created_at": "2026-11-04T10:00:00Z"
+  "personalDataConsent": true,
+  "marketingConsentYMDP": false,
+  "marketingConsentDEALER": true,
+  "consentDateTime": "2026-11-02T13:35:00-05:00",
+  "requestDateTime": "2026-11-02T10:35:00-05:00",
+  "isDeleted": 0,
+  "createdAt": "2026-11-02T10:35:02-05:00"
 }
 ```
-- La respuesta **no** incluye nombre ni teléfono.
-- Si el registro está en `NO_ACEPTADO` (`is_deleted = 1`), `consents.marketing_yamaha` y `consents.marketing_dealer` valen `null`.
+- La respuesta **no** incluye nombre, teléfono ni correo.
+- Los checks usan los mismos nombres que el callback (M5) y solo valen `null` mientras el registro está `PENDIENTE` (`consentDateTime` también).
+- Si el registro está en `NO_ACEPTADO` (`isDeleted = 1`), `marketingConsentYMDP` y `marketingConsentDEALER` valen `false`.
 
 ### Criterios de aceptación M2
 
-- Tests: creación (201); RN-04 con el mismo `transaction_id` (200); RN-04 con un nuevo `transaction_id` y registro activo (200, sin WhatsApp); RN-03 mismo documento con otro Dealer (201); RN-05 nueva compra tras un rechazo (201, registro y WhatsApp nuevos); validaciones (422); API Key (401) y bypass con `API_KEY_ENABLED=false`.
+- Tests: creación (201); RN-04 con el mismo `IdentifierId` (200); RN-04 con un nuevo `IdentifierId` y registro activo (200, sin WhatsApp); RN-03 mismo cliente con otro Dealer (201); RN-05 nueva compra tras un rechazo (201, registro y WhatsApp nuevos); validaciones (422); campos opcionales que no rechazan (`customerEmail` inválido, sin `requestDateTime`); API Key (401) y bypass con `API_KEY_ENABLED=false`.
 - Tests unitarios de normalización: tildes y Ñ conservadas, espacios colapsados, teléfono `+51 987-654-321` → `987654321`.
 
 ---
@@ -505,50 +515,51 @@ Busca por `sha256(token)`.
 **Response 200**
 ```json
 {
-  "link_status": "VALID",
-  "privacy_policy_url": "https://...",
-  "dealer_display_name": null
+  "linkStatus": "VALID",
+  "privacyPolicyUrl": "https://...",
+  "dealerName": "ABC Motors"
 }
 ```
 - Implementado en `app/api/v1/public.py` y `app/services/consent_links.py`. Los endpoints públicos **no usan API Key**.
-- `link_status`: `VALID` | `EXPIRED` (`now > expires_at`) | `USED` (`used_at` no nulo). Un enlace usado y además vencido es `USED` (el cliente ya respondió). Un enlace vencido o usado responde `200` con su `link_status`.
+- `linkStatus`: `VALID` | `EXPIRED` (`now > expires_at`) | `USED` (`used_at` no nulo). Un enlace usado y además vencido es `USED` (el cliente ya respondió). Un enlace vencido o usado responde `200` con su `linkStatus`.
 - Token inexistente → `404 {"detail": "El enlace no existe"}` (la landing lo trata igual que un enlace inválido).
-- `privacy_policy_url` vale `null` si `PRIVACY_POLICY_URL` no está configurada (PENDIENTE-14).
-- ⚠️ PENDIENTE-05: ¿se muestra el nombre del Dealer en la landing? El mockup dice "DEALER" genérico. Mientras tanto `dealer_display_name` vale `null` y la landing muestra "DEALER".
+- `privacyPolicyUrl` vale `null` si `PRIVACY_POLICY_URL` no está configurada (PENDIENTE-14).
+- `dealerName`: el `dealerName` que envió KIZUNA, que la landing muestra en el check 3 (PENDIENTE-05 resuelto). `null` si KIZUNA no lo envió: la landing muestra "DEALER".
 - **No** devuelve datos personales.
 
 ### `POST /api/v1/public/consent-links/{token}/submit` — registrar respuestas
 
 **Request**
 ```json
-{ "personal_data": true, "marketing_yamaha": false, "marketing_dealer": true }
+{ "personalDataConsent": true, "marketingConsentYMDP": false, "marketingConsentDEALER": true }
 ```
 
-- Los tres campos son **obligatorios** y deben ser booleanos de JSON (`true`/`false`): `"true"`, `1` o `null` se rechazan, igual que los campos extra → `422` en español. Es evidencia legal: no se interpreta el valor.
+- Los valores deben ser booleanos de JSON (`true`/`false`) o `null`: `"true"` o `1` se rechazan, igual que los campos extra → `422` en español. Es evidencia legal: no se interpreta el valor.
+- Un check en `null` (o que no se envía) **se registra como `false`** en `consents` y en el callback (decisión del 05/11/2026); la evidencia guarda el `null` tal cual. `personalDataConsent` en `null` es un rechazo (RN-01).
 
 **Lógica (en una sola transacción de base de datos)**
-1. Validar el enlace: si es `EXPIRED` o `USED` → `410 Gone` con `{"detail", "link_status"}`: `"El enlace venció"` (`EXPIRED`) o `"El enlace ya fue utilizado"` (`USED`). Token inexistente → `404`. En ningún caso se modifica nada.
+1. Validar el enlace: si es `EXPIRED` o `USED` → `410 Gone` con `{"detail", "linkStatus"}`: `"El enlace venció"` (`EXPIRED`) o `"El enlace ya fue utilizado"` (`USED`). Token inexistente → `404`. En ningún caso se modifica nada.
 2. Bloquear la fila (`SELECT ... FOR UPDATE`) para evitar doble envío. **El bloqueo se toma antes de validar el paso 1**: así, de dos envíos simultáneos el segundo espera, ve `used_at` y recibe `410 USED`. Después se bloquea también la fila del registro principal (la misma que bloquea `POST /api/v1/consents` antes de crear una copia vinculada).
 3. Registrar `consent_evidence` (IP, user agent, versión y URL de la política, respuestas, fecha).
    - `answers` guarda **exactamente lo que envió el cliente**, también el marketing marcado en un rechazo (RN-01 anula el marketing en `consents`, no en la evidencia).
    - IP: la **primera** de `X-Forwarded-For` (se mantiene así para no depender de la nube de despliegue; en Cloud Run ese valor lo puede escribir el propio cliente). Sin el header, la IP de la conexión (local). Si no es una IP válida se guarda `null` y la respuesta se registra igual.
    - `user_agent` tal cual (o `null` si no viene). `policy_url` guarda `""` si `PRIVACY_POLICY_URL` no está configurada (PENDIENTE-14).
    - `submitted_at`, `responded_at`, `used_at` y `deleted_at` (en RN-01) llevan el mismo instante.
-4. Si `personal_data = true` → `status = ACEPTADO` y se guardan los 3 valores.
-5. Si `personal_data = false` → **RN-01** (prevalece; se acepta el envío con todos los checks desmarcados):
+4. Si `personalDataConsent = true` → `status = ACEPTADO` y se guardan los 3 valores (`null` → `false`).
+5. Si `personalDataConsent` es `false` o `null` → **RN-01** (prevalece; se acepta el envío con todos los checks desmarcados):
    - `status = NO_ACEPTADO`, `consent_personal_data = false`.
    - **Borrado lógico:** `full_name = null`, `is_deleted = 1`, `deleted_at = now()`.
-   - `consent_marketing_yamaha = null` y `consent_marketing_dealer = null` (RN-01: no se conservan las respuestas de marketing).
-   - Se conservan: `transaction_id`, `document_type`, `document_number`, `dealer`, `phone` (por trazabilidad), `additional_info`, `consent_evidence` y `whatsapp_messages`.
+   - `consent_marketing_yamaha = false` y `consent_marketing_dealer = false` (RN-01: no se conservan las respuestas de marketing).
+   - Se conservan: `transaction_id`, `customer_id`, `dealer_code`, `dealer_name`, `phone` (por trazabilidad), `email`, `additional_info`, `consent_evidence` y `whatsapp_messages`.
 6. `responded_at = now()` y `consent_links.used_at = now()`.
-7. **Copias vinculadas (RN-04):** con la fila del principal bloqueada, copiar la respuesta a sus copias vinculadas que sigan `PENDIENTE` con `apply_response_to_linked_copies()` (`app/services/linked_copies.py`, ya implementada en M2). En `ACEPTADO` se copian el estado, los tres checks y `responded_at`; en `NO_ACEPTADO` se aplica RN-01 a cada copia (`is_deleted = 1`, `deleted_at`, `full_name = null`, marketing en `null`; se conservan documento, Dealer, teléfono y transacción).
+7. **Copias vinculadas (RN-04):** con la fila del principal bloqueada, copiar la respuesta a sus copias vinculadas que sigan `PENDIENTE` con `apply_response_to_linked_copies()` (`app/services/linked_copies.py`, ya implementada en M2). En `ACEPTADO` se copian el estado, los tres checks y `responded_at`; en `NO_ACEPTADO` se aplica RN-01 a cada copia (`is_deleted = 1`, `deleted_at`, `full_name = null`, marketing en `false`; se conservan `customer_id`, `dealer_code`, teléfono y transacción).
 8. Crear en `kizuna_notifications` (`PENDIENTE`) **un registro por el principal y uno por cada copia vinculada actualizada en el paso 7**, y disparar los envíos (M5) **después del commit**.
    - Implementado en `app/services/kizuna_notifications.py`: `enqueue_notifications()` crea las filas con el payload de `build_kizuna_payload()` (`app/integrations/kizuna_client.py`) y `target_url = KIZUNA_CALLBACK_URL`. El router dispara `KizunaNotifier.dispatch()` como `BackgroundTask` (envío y reintentos: M5).
 9. Responder `200 {"status":"ACEPTADO"|"NO_ACEPTADO"}`. La landing redirige a `/gracias` en ambos casos.
 
 ### Criterios de aceptación M4
 
-- Tests: aceptación completa; aceptación con marketing en `false`; RN-01 con los tres checks desmarcados (verificar `full_name = null`, `marketing_* = null`, `is_deleted = 1` y documento, Dealer y transacción conservados); enlace vencido (410); enlace usado (410); doble envío concurrente (solo uno se registra).
+- Tests: aceptación completa; aceptación con marketing en `false`; RN-01 con los tres checks desmarcados (verificar `full_name = null`, `marketing_* = false`, `is_deleted = 1` y `customer_id`, `dealer_code` y transacción conservados); checks en `null` registrados como `false`; enlace vencido (410); enlace usado (410); doble envío concurrente (solo uno se registra).
 - Copias vinculadas: la respuesta del principal se copia a sus copias `PENDIENTE` (aceptación y RN-01) y se crea una notificación a KIZUNA por cada ID de transacción.
 
 ---
@@ -558,18 +569,18 @@ Busca por `sha256(token)`.
 ### Requerimientos
 
 - Tras el envío del cliente (M4), el backend hace `POST` a `KIZUNA_CALLBACK_URL` con la respuesta final.
-- **Una petición por cada ID de transacción:** si el registro tiene copias vinculadas (RN-04), se envía una respuesta para el principal y otra por cada copia, cada una con su propio `transaction_id` y su propia fila en `kizuna_notifications` (reintentos independientes).
-- **Copia que nace ya con respuesta** (el principal estaba `ACEPTADO` cuando llegó el ID nuevo, M2 paso 4): **también se le envía su respuesta final a KIZUNA**, aunque el cliente no vuelva a responder, para que KIZUNA reciba la respuesta de cada ID. En M5, `POST /api/v1/consents` crea esa notificación en `kizuna_notifications` (`PENDIENTE`) en la misma transacción en que crea la copia, y dispara el envío **después del commit**. Una copia que nace `PENDIENTE` no se notifica al crearse (se notifica cuando el cliente responde, M4 pasos 7 y 8), ni tampoco el reenvío del mismo `transaction_id` (M2 paso 2).
+- **Una petición por cada ID de transacción:** si el registro tiene copias vinculadas (RN-04), se envía una respuesta para el principal y otra por cada copia, cada una con su propio `IdentifierId` y su propia fila en `kizuna_notifications` (reintentos independientes).
+- **Copia que nace ya con respuesta** (el principal estaba `ACEPTADO` cuando llegó el ID nuevo, M2 paso 4): **también se le envía su respuesta final a KIZUNA**, aunque el cliente no vuelva a responder, para que KIZUNA reciba la respuesta de cada ID. En M5, `POST /api/v1/consents` crea esa notificación en `kizuna_notifications` (`PENDIENTE`) en la misma transacción en que crea la copia, y dispara el envío **después del commit**. Una copia que nace `PENDIENTE` no se notifica al crearse (se notifica cuando el cliente responde, M4 pasos 7 y 8), ni tampoco el reenvío del mismo `IdentifierId` (M2 paso 2).
 - Implementado en `app/integrations/kizuna_client.py` (`build_kizuna_payload()`, `KizunaClient`: un intento) y `app/services/kizuna_notifications.py` (`KizunaNotifier`: outbox, reclamo, reintentos y reproceso).
 - **Interruptor:** `KIZUNA_CALLBACK_ENABLED=true|false`. Con `false`, **no se dispara ninguna petición**: la notificación se guarda en `kizuna_notifications` con estado `PENDIENTE` y se registra en el log que el envío está desactivado. Por defecto en `.env.example`: `false`.
-- **Mientras no exista el endpoint real de KIZUNA**, el envío apunta a un **mock** (ver más abajo). Pasar al endpoint real debe requerir **cambios mínimos**: la URL y la autenticación por variables de entorno, y los campos en **una sola función** de mapeo (`build_kizuna_payload()` en `integrations/kizuna_client.py`).
+- **Mientras no exista el endpoint real de KIZUNA**, el envío apunta a un **mock** (ver más abajo). Pasar al endpoint real solo debe requerir la URL y la autenticación por variables de entorno. Los campos se arman en **una sola función** (`build_kizuna_payload()` en `integrations/kizuna_client.py`).
 - **Reintentos:** 1 intento inicial + **hasta 3 reintentos** (`KIZUNA_CALLBACK_MAX_RETRIES=3`), con espera configurable entre intentos (`KIZUNA_CALLBACK_BACKOFF_SECONDS`, por ejemplo `5,30,120`) y timeout por intento (`KIZUNA_CALLBACK_TIMEOUT_SECONDS`).
   - La espera `KIZUNA_CALLBACK_BACKOFF_SECONDS[i]` va antes del reintento `i+1`. Si hay más reintentos que valores, se repite el último; sin valores, no hay espera. El header `Retry-After` de un `429` no se usa.
   - `KIZUNA_CALLBACK_TIMEOUT_SECONDS` limita el **intento completo** (no solo cada etapa de la conexión).
-- Se reintenta ante error de red, timeout o respuesta `5xx`/`429`. Ante otros `4xx` se marca `FALLIDO` sin reintentar **(propuesta)**. Éxito = cualquier `2xx`. Un `3xx` no se sigue y se marca `FALLIDO` sin reintentar.
+- Se reintenta ante error de red, timeout o respuesta `5xx`/`429`. Ante otros `4xx` se marca `FALLIDO` sin reintentar **(propuesta)**. Éxito = cualquier `2xx` (KIZUNA no definió una respuesta; se espera `200`). Un `3xx` no se sigue y se marca `FALLIDO` sin reintentar.
 - Cada intento actualiza `kizuna_notifications` (`attempts`, `last_http_status`, `last_error`, `last_attempt_at`) con su propio commit: durante el envío y la espera entre intentos no queda ninguna transacción abierta. Si se agotan los reintentos → `FALLIDO` y log `ERROR`. El endpoint de consulta (M2) sigue siendo la vía de respaldo.
-  - `last_error`: `HTTP <código>: <cuerpo>` (cuerpo truncado a 500 caracteres; puede traer el documento, por eso **no** va al log) o el tipo de error de red o timeout. En un envío exitoso queda en `null`.
-  - En el log solo van el `transaction_id`, el ID de la notificación, el intento y el código HTTP: nunca el payload ni el valor de autenticación.
+  - `last_error`: `HTTP <código>: <cuerpo>` (cuerpo truncado a 500 caracteres; puede traer el identificador del cliente, por eso **no** va al log) o el tipo de error de red o timeout. En un envío exitoso queda en `null`.
+  - En el log solo van el `IdentifierId`, el ID de la notificación, el intento y el código HTTP: nunca el payload ni el valor de autenticación.
 - La notificación guarda su `payload` y su `target_url` al crearse: se envía eso aunque después cambie la variable de entorno.
 - Las notificaciones de un mismo envío (el principal y sus copias) se envían **en paralelo**: los reintentos de una no retrasan a las demás.
 - Ejecución: `BackgroundTasks` de FastAPI después del commit. En Cloud Run se requiere **CPU siempre asignada** (M7) para que la tarea no se congele. *(Alternativa si se requiere más robustez: Cloud Tasks.)*
@@ -581,30 +592,29 @@ Busca por `sha256(token)`.
   - `FALLIDO` y `ENVIADO` no se reprocesan.
 - **Arranque:** con `KIZUNA_CALLBACK_ENABLED=false` → log `WARNING`. Con `true` y sin `KIZUNA_CALLBACK_URL`, o con `KIZUNA_CALLBACK_AUTH_HEADER` sin `KIZUNA_CALLBACK_AUTH_VALUE` → **la aplicación no arranca** (`KizunaConfigurationError`). Si `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` no supera la espera más larga entre intentos más el timeout → log `WARNING` (otra instancia podría reclamar una notificación a mitad de sus reintentos y KIZUNA la recibiría dos veces).
 
-### Contrato del callback — ⚠️ PENDIENTE-13 (lo define Yamaha/KIZUNA)
+### Contrato del callback (definido por KIZUNA) — ⚠️ PENDIENTE-13: URL y autenticación
 
-Falta: URL, método de autenticación, formato del payload, literales de estado (`NO ACEPTADO` con espacio o `NO_ACEPTADO`) y respuesta esperada. **Mientras tanto** se implementa este payload, construido desde una sola función para cambiarlo fácilmente:
+KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final con este payload:
 ```json
 {
-  "transaction_id": "TRX-000123",
-  "document_type": "DNI",
-  "document_number": "12345678",
-  "dealer": "DEALER-001",
-  "status": "ACEPTADO",
-  "consents": {
-    "personal_data": true,
-    "marketing_yamaha": false,
-    "marketing_dealer": true
-  },
-  "responded_at": "2026-11-05T15:20:11Z"
+  "IdentifierId": "100002001",
+  "customerId": "76299887",
+  "dealerCode": "CL0001",
+  "consentDateTime": "2026-11-02T13:35:00-05:00",
+  "personalDataConsent": true,
+  "marketingConsentYMDP": false,
+  "marketingConsentDEALER": false
 }
 ```
-Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUNA_CALLBACK_AUTH_VALUE`. En `NO_ACEPTADO`, `marketing_*` vale `null`.
+- `consentDateTime` = `responded_at` con la hora de Lima (`KIZUNA_TIMEZONE`, `-05:00`), sin fracciones de segundo.
+- Los checks **nunca van en `null`**: un check no marcado o en `null` va en `false`, y en `NO_ACEPTADO` (RN-01) el marketing va en `false`.
+- No lleva estado: el rechazo se reconoce por `personalDataConsent = false`.
+- Falta: URL, método de autenticación y respuesta esperada. **Mientras tanto**: autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUNA_CALLBACK_AUTH_VALUE`, y cualquier `2xx` es éxito (se espera `200`).
 
 ### Mock de KIZUNA (`mocks/kizuna_mock/`)
 
 - Mini aplicación FastAPI levantada con `docker compose` (servicio `kizuna-mock`, puerto `8081`).
-- `POST /kizuna/consent-result`: valida que el payload tenga la estructura esperada, lo registra en el log (enmascarando el documento) y responde `200 {"received": true}`.
+- `POST /kizuna/consent-result`: valida que el payload tenga la estructura del contrato (checks booleanos, sin `null`), lo registra en el log (enmascarando el `customerId`) y responde `200 {"received": true}`.
 - Para simular fallos y probar los reintentos: `MOCK_FAIL_TIMES=N` (responde `500` las primeras N veces) y `MOCK_RESPONSE_DELAY_SECONDS` (simula un timeout).
 - `GET /kizuna/received`: lista los payloads recibidos (útil en pruebas).
 - Valor local: `KIZUNA_CALLBACK_URL=http://localhost:8081/kizuna/consent-result` si la API corre en el host (`uv run uvicorn`), o `http://kizuna-mock:8081/kizuna/consent-result` si corre dentro de docker compose (el compose lo fija).
@@ -616,7 +626,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 - Con `KIZUNA_CALLBACK_ENABLED=false` no sale ninguna petición HTTP y la notificación queda `PENDIENTE`.
 - Con el mock en `MOCK_FAIL_TIMES=3` → `ENVIADO` con `attempts = 4`.
 - Con el mock fallando siempre → `FALLIDO` con `attempts = 4`.
-- Cambiar al endpoint real solo requiere modificar variables de entorno y `build_kizuna_payload()`.
+- Cambiar al endpoint real solo requiere modificar variables de entorno.
 
 ---
 
@@ -642,6 +652,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
   - Check 2: "Autorizo a **YAMAHA** para el tratamiento de mis datos personales con fines de perfilamiento y envío de publicidad, de acuerdo con la [política de privacidad]."
   - Check 3: "Autorizo al **DEALER** para el tratamiento de mis datos personales con fines de perfilamiento y envío de publicidad, de acuerdo con la [política de privacidad]."
   - Botón: **ENVIAR**
+- En el check 3, **DEALER** se reemplaza por el `dealerName` que devuelve `GET /public/consent-links/{token}`; si viene `null`, queda "DEALER".
 - Los checkboxes inician **desmarcados**. Marcado = aceptado; desmarcado = rechazado.
 - **RN-01 prevalece:** se **elimina** del mockup la frase "* Autorización obligatoria para continuar". El botón ENVIAR está **siempre habilitado**. El cliente puede enviar con cualquier combinación de checks, **incluso todos desmarcados**, y así se registra su rechazo. No hay validación que bloquee el envío ni diálogo de confirmación.
 - Al enviar: deshabilitar el botón (evitar doble clic), `POST /submit` y, si la respuesta es exitosa (`ACEPTADO` o `NO_ACEPTADO`), ir a `/gracias`. Ante `410`, ir a `/enlace-invalido`. Ante un error de red, mostrar un mensaje y permitir reintentar.
@@ -703,7 +714,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 2. Ejecutar migraciones **antes** del deploy: Cloud SQL Auth Proxy local + `alembic upgrade head` con el usuario `consent_owner`.
 3. `gcloud run deploy consent-api --image ... --region <REGION> --service-account consent-api-sa --min-instances=1 --no-cpu-throttling --add-cloudsql-instances <INSTANCE> --allow-unauthenticated --env-vars-file deploy/cloudrun.env.yaml --set-secrets ...`
 4. Asignar a `TWILIO_STATUS_CALLBACK_URL` la URL de Cloud Run (`https://<servicio>/api/v1/webhooks/twilio/status`) y volver a desplegar. No se configura nada en la consola de Twilio: la API envía `status_callback` en cada mensaje y valida la firma contra esa URL.
-5. Mantener `KIZUNA_CALLBACK_ENABLED=false` hasta tener el endpoint real de KIZUNA y su contrato confirmado.
+5. Mantener `KIZUNA_CALLBACK_ENABLED=false` hasta tener la URL y la autenticación del endpoint real de KIZUNA (el payload ya está definido).
 6. Landing: `npm run build` con las variables `PUBLIC_*` de Producción y `firebase deploy --only hosting`.
 7. En Firebase Hosting, agregar el dominio personalizado, crear en Hostinger los registros DNS (TXT de verificación y A) que indique Firebase y esperar a que el SSL quede activo.
 8. Ajustar `CORS_ALLOWED_ORIGINS` y `LANDING_BASE_URL` al dominio final.
@@ -722,10 +733,10 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 2. Casos:
    - Alta → WhatsApp → aceptación total → callback a KIZUNA.
    - Alta → envío con todos los checks desmarcados (RN-01) → verificar borrado lógico (`is_deleted = 1`, nombre nulo) y callback.
-   - RN-04: reenvío del mismo documento y Dealer con registro activo → solo se actualizan los datos.
+   - RN-04: reenvío del mismo cliente y Dealer con registro activo → solo se actualizan los datos.
    - RN-04 con un ID nuevo mientras el cliente no responde → la copia queda `PENDIENTE`; al responder el cliente, la copia recibe la respuesta y KIZUNA recibe dos callbacks (uno por ID).
-   - RN-03: mismo documento con otro Dealer → registro y WhatsApp nuevos.
-   - RN-05: nueva transacción del mismo documento y Dealer tras un rechazo → registro y WhatsApp nuevos.
+   - RN-03: mismo cliente con otro Dealer → registro y WhatsApp nuevos.
+   - RN-05: nueva transacción del mismo cliente y Dealer tras un rechazo → registro y WhatsApp nuevos.
    - Enlace vencido (bajar temporalmente `LINK_TTL_HOURS`) y enlace usado.
    - Número inválido → error registrado.
    - Callback a KIZUNA caído → reintentos y estado `FALLIDO`.
@@ -769,6 +780,7 @@ Autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUN
 | `KIZUNA_CALLBACK_BACKOFF_SECONDS` | `5,30,120` | Espera antes de cada reintento |
 | `KIZUNA_CALLBACK_TIMEOUT_SECONDS` | `10` | Límite de cada intento completo |
 | `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` | `10` | Al arrancar se reenvían las notificaciones `PENDIENTE` sin reclamar y las que llevan más de N minutos sin intento (reclamo vencido) |
+| `KIZUNA_TIMEZONE` | `America/Lima` | Zona horaria de las fechas hacia KIZUNA (`consentDateTime`, fechas de las consultas) y de `requestDateTime` sin offset |
 
 ### Frontend (build)
 
@@ -785,13 +797,13 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 
 | ID | Tema | Pregunta | Mientras tanto |
 |---|---|---|---|
-| PENDIENTE-05 | Dealer | ¿KIZUNA envía código, nombre o ambos? ¿Se muestra el nombre en la landing? | Un campo `dealer`; la landing muestra "DEALER" |
+| ~~PENDIENTE-05~~ | Dealer | **Resuelto el 05/11/2026:** KIZUNA envía `dealerCode` y `dealerName`; la landing muestra `dealerName` | — |
 | PENDIENTE-07 | Texto final del mensaje | Yamaha lo cerrará antes de construir la plantilla en Twilio | Bloquea la creación de la plantilla |
 | PENDIENTE-09 | Región de Google Cloud | La define Yamaha | Parámetro `<REGION>` en los comandos |
 | PENDIENTE-10 | Teléfonos extranjeros | Con la regla de 9 dígitos sin prefijo, solo se soportan móviles de Perú. ¿Es correcto? | Se rechaza (422) lo que no tenga 9 dígitos |
 | PENDIENTE-11 | Nombre visible del remitente | Nombre que verá el cliente en WhatsApp (el mockup muestra "YAMAHA***") | — |
 | PENDIENTE-12 | Swagger en Producción | ¿Se deja `/docs` expuesto? | Controlado por `DOCS_ENABLED` |
-| PENDIENTE-13 | Contrato del callback a KIZUNA | URL, autenticación, payload, literales de estado y respuesta esperada | Envío al **mock** con el payload propuesto en M5; `KIZUNA_CALLBACK_ENABLED=false` |
+| PENDIENTE-13 | Callback a KIZUNA | URL, autenticación y respuesta esperada (el payload ya lo definió KIZUNA, M5) | Envío al **mock**; éxito = `2xx`; `KIZUNA_CALLBACK_ENABLED=false` |
 | PENDIENTE-14 | Política de privacidad | URL y versión vigentes | Variables de entorno |
 | PENDIENTE-15 | Dominio de la landing | Dominio o subdominio final (probablemente provisto desde Hostinger). **Se requiere antes de crear la plantilla de WhatsApp**, porque el botón usa un dominio fijo | `LANDING_BASE_URL` y `CORS_ALLOWED_ORIGINS` configurables |
 | PENDIENTE-16 | Expiración sin respuesta | Si el enlace vence sin respuesta, ¿se notifica algo a KIZUNA? | No se notifica; el estado queda `PENDIENTE` |
@@ -875,3 +887,9 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 27/10/2026 | M7 · Usuarios de base de datos | `consent_owner` corre las migraciones; `consent_app` (creado por SQL, solo DML) es el de la aplicación, porque los usuarios creados con `gcloud` reciben `cloudsqlsuperuser`. |
 | 27/10/2026 | M7 · Secretos | `KIZUNA_CALLBACK_AUTH_VALUE` queda fuera de `--set-secrets` hasta que PENDIENTE-13 defina la autenticación de KIZUNA. Los secretos se montan con `:latest`. |
 | 27/10/2026 | M7 · Tier de Cloud SQL | `db-g1-small` requiere `--edition=ENTERPRISE` (Enterprise Plus no ofrece tiers de núcleo compartido); el tier sigue a validar con Yamaha. |
+| 05/11/2026 | Contrato de KIZUNA · entrada | `POST /api/v1/consents` recibe `{"_request": {IdentifierId, customerId, customerName, customerPhone, customerEmail, dealerName, dealerCode, requestDateTime}}` (+ `additionalInfo` opcional). Se elimina `document_type`: el cliente se identifica solo por `customerId` (alfanumérico, máximo 20) + `dealerCode`. Migración `b7c2d9e41f60`. Reemplaza la decisión "Documentos de identidad" del 26/10. |
+| 05/11/2026 | Campos opcionales | `customerEmail` opcional y nunca rechaza (inválido → `null`). `requestDateTime` opcional con cualquier offset (sin él, la hora del sistema; sin offset, hora de Lima). `dealerName` opcional. `additionalInfo` se mantiene opcional. |
+| 05/11/2026 | PENDIENTE-05 · Dealer | KIZUNA envía código (`dealerCode`, clave de RN-03/04/05) y nombre (`dealerName`). La landing muestra `dealerName` en el check 3. |
+| 05/11/2026 | Contrato de KIZUNA · callback | Payload `{IdentifierId, customerId, dealerCode, consentDateTime, personalDataConsent, marketingConsentYMDP, marketingConsentDEALER}`, con `consentDateTime` en hora de Lima. Sin respuesta definida por KIZUNA: se espera `200` (éxito = `2xx`). Siguen pendientes URL y autenticación (PENDIENTE-13). |
+| 05/11/2026 | Checks nulos | Un check en `null` se registra como `false` en `consents` y se envía `false` a KIZUNA. En RN-01 el marketing pasa a `false` (antes `null`). La evidencia guarda lo recibido. |
+| 05/11/2026 | Estilo de la API | Todos los endpoints (KIZUNA y públicos) usan los nombres de KIZUNA en camelCase en requests, query, rutas y respuestas (`IdentifierId`, `customerId`, `dealerCode`, `affectedIdentifierId`, `isDeleted`, `linkStatus`, `privacyPolicyUrl`, `dealerName`, `errorCode`...). Las fechas de las respuestas van con el offset de `KIZUNA_TIMEZONE` (nueva variable). El webhook de Twilio no cambia (formato de Twilio). |
