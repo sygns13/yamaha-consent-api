@@ -1,7 +1,9 @@
 # Entorno local (M0). No se usa en Producción.
 #
-#   docker compose up                  → PostgreSQL 16 + mock de KIZUNA (la API se levanta con uv en el host)
+#   docker compose up                  → PostgreSQL 16 + mock de KIZUNA + Mailpit (la API se levanta con uv en el host)
 #   docker compose --profile api up    → además, la API en un contenedor (http://localhost:8000)
+#
+# Mailpit captura los correos del BackOffice: SMTP en localhost:1025, bandeja en http://localhost:8025.
 #
 # Las credenciales y el puerto de PostgreSQL deben coincidir con DATABASE_URL del .env.
 # Se pueden cambiar sin editar este archivo: POSTGRES_PORT=5434 docker compose up
@@ -33,6 +35,13 @@ services:
     ports:
       - "${KIZUNA_MOCK_PORT:-8081}:8081"
 
+  mailpit:
+    # SMTP de pruebas del BackOffice (sección 7.5 del spec del BackOffice). Versión fija.
+    image: axllent/mailpit:v1.33.1
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+
   api:
     profiles: ["api"]
     build: .
@@ -41,6 +50,8 @@ services:
       # Dentro de la red de compose los servicios se llaman por su nombre.
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-consents_db}
       KIZUNA_CALLBACK_URL: http://kizuna-mock:8081/kizuna/consent-result
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
       PORT: "8000"
     ports:
       - "${API_PORT:-8000}:8000"
@@ -48,6 +59,8 @@ services:
       postgres:
         condition: service_healthy
       kizuna-mock:
+        condition: service_started
+      mailpit:
         condition: service_started
 
 volumes:

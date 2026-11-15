@@ -24,3 +24,11 @@ class TimestampMixin:
         onupdate=func.now(),
         sort_order=10,
     )
+
+
+class CreatedAtMixin:
+    """Solo created_at (timestamptz, UTC): tablas del BackOffice sin updated_at en la sección 4.3 del spec."""
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), sort_order=10
+    )

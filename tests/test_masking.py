@@ -1,6 +1,6 @@
 import pytest
 
-from app.utils.masking import mask_document, mask_phone
+from app.utils.masking import mask_document, mask_email, mask_phone
 
 
 @pytest.mark.parametrize(
@@ -47,3 +47,23 @@ def test_mask_keeps_length_and_hides_prefix(mask) -> None:
     assert len(masked) == len(value)
     assert masked[-4:] == value[-4:]
     assert set(masked[:-4]) == {"*"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("juan.perez@mail.com", "j*********@mail.com"),  # ejemplo de la spec del BackOffice (sección 5.9)
+        ("  ana@x.pe  ", "a**@x.pe"),  # ignora espacios alrededor
+        ("a@mail.com", "*@mail.com"),  # con un solo carácter quedaría en claro: se enmascara
+        ("@mail.com", "@mail.com"),
+        ("raro@usuario@mail.com", "r***********@mail.com"),  # el dominio es lo que sigue a la última "@"
+        ("juanperez", "*********"),  # sin "@": todo enmascarado
+        ("", ""),
+    ],
+)
+def test_mask_email(value: str, expected: str) -> None:
+    assert mask_email(value) == expected
+
+
+def test_mask_email_none_returns_none() -> None:
+    assert mask_email(None) is None

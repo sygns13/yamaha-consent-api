@@ -1,8 +1,9 @@
 """Fixtures compartidas para tests contra PostgreSQL.
 
 Los tests de API usan una base aparte, `<DATABASE_URL>_test` (p. ej. consents_db_test), que se crea si no existe y
-se migra con Alembic una vez por sesión. Cada test empieza con las tablas vacías. Si PostgreSQL no responde, los
-tests que usan estas fixtures se saltan.
+se migra con Alembic una vez por sesión. Cada test empieza con las tablas vacías, salvo las tablas semilla
+(`SEED_TABLES`: roles, módulos, permisos y Ubigeo, que cargan las migraciones). Si PostgreSQL no responde, los tests que
+usan estas fixtures se saltan.
 """
 
 import asyncio
@@ -16,13 +17,19 @@ import httpx
 import pytest
 from alembic.config import Config
 from sqlalchemy import make_url, pool, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from alembic import command
 from app.core.config import Settings, get_settings
 from app.db.base import Base
 from app.integrations.whatsapp import WhatsAppSendResult, get_whatsapp_sender
-from app.models import WhatsappStatus
+from app.models import SEED_TABLES, WhatsappStatus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_DB_SUFFIX = "_test"
@@ -62,12 +69,20 @@ def test_database_url() -> str:
     return url
 
 
+async def truncate_tables(conn: AsyncConnection) -> None:
+    """Vacía todas las tablas del modelo menos las semilla (sección 4.6 del spec del BackOffice).
+
+    Ninguna tabla semilla referencia a una tabla que se vacía, así que el CASCADE no las alcanza.
+    """
+    tables = ", ".join(table.name for table in Base.metadata.sorted_tables if table.name not in SEED_TABLES)
+    await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+
+
 @pytest.fixture
 async def db_engine(test_database_url: str) -> AsyncIterator[AsyncEngine]:
     engine = create_async_engine(test_database_url, poolclass=pool.NullPool, hide_parameters=True)
-    tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
     async with engine.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        await truncate_tables(conn)
     yield engine
     await engine.dispose()
 

@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import health, kizuna, public, webhooks
+from app.core.backoffice_security import check_backoffice_settings
 from app.core.config import get_settings
 from app.core.http_errors import http_exception_handler, unhandled_exception_handler
 from app.core.logging import configure_logging
@@ -19,11 +20,12 @@ from app.services.kizuna_notifications import KizunaNotifier, reprocess_pending_
 
 settings = get_settings()
 configure_logging(settings.log_level)
-# Falla al arrancar si la configuración de seguridad, de Twilio o del callback a KIZUNA es inválida (antes de crear
-# la app).
+# Falla al arrancar si la configuración de seguridad, de Twilio, del callback a KIZUNA o del BackOffice es inválida
+# (antes de crear la app).
 check_security_settings(settings)
 check_twilio_settings(settings)
 check_kizuna_settings(settings)
+check_backoffice_settings(settings)
 
 
 @asynccontextmanager

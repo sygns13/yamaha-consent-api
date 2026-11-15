@@ -74,10 +74,41 @@ class Settings(BaseSettings):
     # requestDateTime cuando llega sin offset.
     kizuna_timezone: str = "America/Lima"
 
+    # --- BackOffice (BACKOFFICE_DEALERS.spec.md, sección 9.1) ---
+    # TODO(PENDIENTE-18): dominio del BackOffice en Producción. Mientras tanto, la URL técnica de Firebase Hosting.
+    # Base del enlace de restablecimiento de contraseña: {BACKOFFICE_BASE_URL}/restablecer-contrasena?t={token}.
+    backoffice_base_url: str = ""
+    # false solo en local por http. Con APP_ENV=production y false, la app no arranca (check_backoffice_settings).
+    backoffice_session_cookie_secure: bool = True
+    backoffice_session_idle_minutes: int = Field(default=30, gt=0)
+    backoffice_session_max_hours: int = Field(default=12, gt=0)
+    backoffice_login_max_failed_attempts: int = Field(default=5, gt=0)
+    backoffice_login_lock_minutes: int = Field(default=15, gt=0)
+    backoffice_password_min_length: int = Field(default=8, ge=8, le=64)
+    backoffice_password_reset_ttl_minutes: int = Field(default=30, gt=0)
+    backoffice_password_reset_max_per_hour: int = Field(default=3, gt=0)
+
+    # --- Correo del BackOffice (SMTP, sección 7) ---
+    # false: no se envían correos reales (solo se registra en el log). true: envío por SMTP.
+    email_send_enabled: bool = False
+    email_from_address: str = ""
+    email_from_name: str = "BackOffice Consentimientos Yamaha"
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, gt=0, le=65535)
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_username: str = ""
+    smtp_password: SecretStr = SecretStr("")
+    smtp_timeout_seconds: float = Field(default=10, gt=0)
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("smtp_security", mode="before")
+    @classmethod
+    def _lower_smtp_security(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
 
     @field_validator("cors_allowed_origins", "kizuna_callback_backoff_seconds", mode="before")
     @classmethod
@@ -100,10 +131,10 @@ class Settings(BaseSettings):
             raise ValueError(f"zona horaria desconocida: {value}") from exc
         return value
 
-    @field_validator("landing_base_url")
+    @field_validator("landing_base_url", "backoffice_base_url")
     @classmethod
     def _strip_trailing_slash(cls, value: str) -> str:
-        # El enlace se arma como {LANDING_BASE_URL}/?t={token}.
+        # Los enlaces se arman como {LANDING_BASE_URL}/?t={token} y {BACKOFFICE_BASE_URL}/restablecer-contrasena?t=...
         return value.rstrip("/")
 
     @property

@@ -1,7 +1,8 @@
 # yamaha-consent-api
 
 Backend (FastAPI) de la plataforma de conformidades de tratamiento de datos personales (KIZUNA · WhatsApp · Landing).
-La especificación completa está en `REQUERIMIENTOS_TECNICOS.md`.
+La especificación completa está en `REQUERIMIENTOS_TECNICOS.md`. El BackOffice (endpoints `/api/v1/backoffice/*`, en
+construcción por fases) se especifica en `requerimientos/BACKOFFICE_DEALERS.spec.md` del workspace.
 
 ## Requisitos locales
 
@@ -13,15 +14,16 @@ La especificación completa está en `REQUERIMIENTOS_TECNICOS.md`.
 ```bash
 uv sync                      # crea .venv e instala dependencias
 cp .env.example .env         # PowerShell: Copy-Item .env.example .env
-docker compose up -d         # PostgreSQL 16 (puerto 5433) + mock de KIZUNA (puerto 8081)
+docker compose up -d         # PostgreSQL 16 (puerto 5433) + mock de KIZUNA (puerto 8081) + Mailpit (1025 y 8025)
 uv run alembic upgrade head  # crea el esquema (solo la primera vez o tras nuevas migraciones)
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
 - Health check: http://localhost:8000/health → `{"status":"ok","database":"ok"}`
 - Swagger: http://localhost:8000/docs
+- Correos del BackOffice (Mailpit): http://localhost:8025. El `.env.example` ya apunta a `localhost:1025`.
 - Si ya tienes otro PostgreSQL en el puerto 5433 (por ejemplo, el contenedor `yamaha-consent-db`), detenlo antes o
-  levanta solo el mock: `docker compose up -d kizuna-mock`.
+  levanta solo el mock y Mailpit: `docker compose up -d kizuna-mock mailpit`.
 
 ### API también en contenedor
 
@@ -30,8 +32,8 @@ docker compose --profile api up -d --build
 docker compose exec api alembic upgrade head
 ```
 
-Dentro del compose, la API usa `postgres:5432` y `http://kizuna-mock:8081` (el compose sobrescribe `DATABASE_URL` y
-`KIZUNA_CALLBACK_URL` del `.env`).
+Dentro del compose, la API usa `postgres:5432`, `http://kizuna-mock:8081` y `mailpit:1025` (el compose sobrescribe
+`DATABASE_URL`, `KIZUNA_CALLBACK_URL`, `SMTP_HOST` y `SMTP_PORT` del `.env`).
 
 ### Probar la imagen de Cloud Run en local
 
@@ -66,8 +68,10 @@ Run (`--forwarded-allow-ips '*'`). La imagen no incluye `.env`, `tests/`, `mocks
 
 ## Configuración
 
-Todas las variables están en `.env.example` (sección 9 de la spec). `DATABASE_URL` es la URL completa, incluida la
-contraseña. Los logs salen en JSON por stdout con `request_id` (cabecera `X-Request-ID`); los datos personales se
+Todas las variables están en `.env.example` (sección 9 de la spec; las del BackOffice, en la sección 9.1 de
+`BACKOFFICE_DEALERS.spec.md`). `DATABASE_URL` es la URL completa, incluida la contraseña. `SMTP_PASSWORD` (contraseña
+de aplicación de Gmail) es secreto, igual que `API_KEY`. Con `APP_ENV=production` y
+`BACKOFFICE_SESSION_COOKIE_SECURE=false` la app no arranca. Los logs salen en JSON por stdout con `request_id` (cabecera `X-Request-ID`); los datos personales se
 enmascaran con `app/utils/masking.py`.
 
 ## Migraciones (Alembic)
@@ -77,6 +81,27 @@ uv run alembic current                                  # verifica la conexión
 uv run alembic revision --autogenerate -m "mensaje"     # genera una migración desde los modelos (revisarla a mano)
 uv run alembic upgrade head                             # aplica migraciones
 uv run alembic downgrade base                           # revierte todo el esquema
+```
+
+### Migraciones del BackOffice
+
+- `56b3050c235a_backoffice_access_dealers`: las 11 tablas del BackOffice (roles, módulos, permisos, usuarios, sesiones,
+  enlaces de restablecimiento, Ubigeo, dealers y bitácora), con las semillas de roles, módulos y permisos. No crea
+  usuarios: el primer Administrador se crea con la CLI (fase B2).
+- `b6b72cd353a6_ubigeo_inei_seed`: carga el catálogo Ubigeo INEI (25 departamentos, 196 provincias, 1.892 distritos)
+  desde `alembic/data/ubigeo_inei.csv`. Su downgrade vacía las tablas de Ubigeo **y `dealers`** (`TRUNCATE ... CASCADE`).
+- `uv run alembic downgrade b7c2d9e41f60` vuelve a v1.4: borra las tablas y los datos del BackOffice y deja intactas
+  las 7 tablas de consentimientos.
+- Tras migrar, en cada entorno y una sola vez: `REVOKE UPDATE, DELETE ON audit_logs FROM consent_app;` (la bitácora es
+  solo inserción; la purga de la CLI usa `consent_owner`).
+
+El CSV de Ubigeo se generó **una sola vez** desde la fuente fijada a un commit (sección 4.8 del spec del BackOffice) y
+está versionado junto con `alembic/data/UBIGEO_FUENTE.md` (fuente, hashes, conteos, registro excluido y licencia MIT).
+No se edita a mano: un distrito nuevo se agrega con una migración nueva. Para regenerarlo (necesita internet; se detiene
+si el SHA-256 o los conteos no coinciden):
+
+```bash
+uv run python -m scripts.build_ubigeo_csv
 ```
 
 ## Calidad

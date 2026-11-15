@@ -46,6 +46,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 - Cualquier configuración o desarrollo dentro de KIZUNA, incluida la RN-02 (validación de conformidad vigente) y el envío a D365.
 - Reintentos o reenvíos del WhatsApp cuando el cliente no abre el enlace.
 - Paneles de administración, reportes o formularios adicionales.
+  > **Nota (15/11/2026):** Los paneles de administración del BackOffice se especifican en `BACKOFFICE_DEALERS.spec.md`.
 - **CI/CD automatizado** (solo despliegue manual).
 - Ambientes de QA o Desarrollo en la nube.
 
@@ -893,3 +894,4 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 05/11/2026 | Contrato de KIZUNA · callback | Payload `{IdentifierId, customerId, dealerCode, consentDateTime, personalDataConsent, marketingConsentYMDP, marketingConsentDEALER}`, con `consentDateTime` en hora de Lima. Sin respuesta definida por KIZUNA: se espera `200` (éxito = `2xx`). Siguen pendientes URL y autenticación (PENDIENTE-13). |
 | 05/11/2026 | Checks nulos | Un check en `null` se registra como `false` en `consents` y se envía `false` a KIZUNA. En RN-01 el marketing pasa a `false` (antes `null`). La evidencia guarda lo recibido. |
 | 05/11/2026 | Estilo de la API | Todos los endpoints (KIZUNA y públicos) usan los nombres de KIZUNA en camelCase en requests, query, rutas y respuestas (`IdentifierId`, `customerId`, `dealerCode`, `affectedIdentifierId`, `isDeleted`, `linkStatus`, `privacyPolicyUrl`, `dealerName`, `errorCode`...). Las fechas de las respuestas van con el offset de `KIZUNA_TIMEZONE` (nueva variable). El webhook de Twilio no cambia (formato de Twilio). |
+| 15/11/2026 | Ampliación · BackOffice | Los paneles de administración del BackOffice (login, usuarios, roles, Gestión de Dealers, bitácora) se especifican en `requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.1), que amplía este documento sin modificar sus contratos (KIZUNA, landing, webhook de Twilio). Para el BackOffice manda ese documento; para todo lo demás, este. |

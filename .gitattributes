@@ -1,0 +1,3 @@
+# El CSV de Ubigeo conserva LF en todas las plataformas (también con core.autocrlf=true): su SHA-256 está
+# registrado en alembic/data/UBIGEO_FUENTE.md y lo verifica tests/test_bo_ubigeo_dataset.py.
+alembic/data/ubigeo_inei.csv text eol=lf
