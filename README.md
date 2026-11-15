@@ -87,7 +87,7 @@ uv run alembic downgrade base                           # revierte todo el esque
 
 - `56b3050c235a_backoffice_access_dealers`: las 11 tablas del BackOffice (roles, módulos, permisos, usuarios, sesiones,
   enlaces de restablecimiento, Ubigeo, dealers y bitácora), con las semillas de roles, módulos y permisos. No crea
-  usuarios: el primer Administrador se crea con la CLI (fase B2).
+  usuarios: el primer Administrador se crea con la CLI (ver "BackOffice: autenticación y CLI").
 - `b6b72cd353a6_ubigeo_inei_seed`: carga el catálogo Ubigeo INEI (25 departamentos, 196 provincias, 1.892 distritos)
   desde `alembic/data/ubigeo_inei.csv`. Su downgrade vacía las tablas de Ubigeo **y `dealers`** (`TRUNCATE ... CASCADE`).
 - `uv run alembic downgrade b7c2d9e41f60` vuelve a v1.4: borra las tablas y los datos del BackOffice y deja intactas
@@ -103,6 +103,56 @@ si el SHA-256 o los conteos no coinciden):
 ```bash
 uv run python -m scripts.build_ubigeo_csv
 ```
+
+## BackOffice: autenticación, recuperación de contraseña y CLI (fases B2 y B3)
+
+Endpoints bajo `/api/v1/backoffice` (spec del BackOffice v1.2, secciones 5 y 6.3):
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| POST | `/auth/login` | Público. Responde `Me` y la cookie `__session` |
+| POST | `/auth/logout` | Idempotente (`204`) |
+| GET | `/auth/me` | Sesión (también con cambio de contraseña pendiente) |
+| POST | `/auth/change-password` | Sesión (también con cambio pendiente). Rota la cookie y cierra las demás sesiones |
+| GET | `/auth/password-policy` | Público |
+| POST | `/auth/forgot-password` | Público. Siempre `202` con el mismo cuerpo (no revela cuentas); máximo 3 enlaces por hora |
+| GET | `/auth/password-reset/{token}` | Público. `tokenStatus`: `VALID`, `EXPIRED`, `USED` o `INVALID` |
+| POST | `/auth/password-reset` | Público. Cambia la contraseña, desbloquea y cierra todas las sesiones |
+
+- Sesión opaca en base de datos: la cookie `__session` (`HttpOnly`, `SameSite=Strict`, `Path=/api/v1/backoffice`,
+  `Secure` según `BACKOFFICE_SESSION_COOKIE_SECURE`) lleva el token; `user_sessions` guarda solo su SHA-256. Vence a
+  los 30 min de inactividad o a las 12 h.
+- Todo `POST`/`PUT`/`PATCH`/`DELETE` exige `X-Requested-With: XMLHttpRequest` (si no, `403 CSRF_HEADER_MISSING`).
+- Errores: `{"detail": "...", "code": "...", "field": "..."}` (`field` solo si es de un campo).
+- Contraseñas: Argon2id; política de 8 a 20 caracteres con mayúscula, minúscula, número y carácter especial.
+- Bloqueo: 5 intentos fallidos → 15 min (`423 ACCOUNT_LOCKED`).
+- Correos (después del commit, en `BackgroundTasks`): enlace de restablecimiento
+  (`{BACKOFFICE_BASE_URL}/restablecer-contrasena?t=...`, vence en 30 min, un solo uso) y aviso "Tu contraseña fue
+  actualizada" tras `change-password` y `password-reset`. Con `EMAIL_SEND_ENABLED=false` no se envía nada: el log
+  dice "Correo SIMULADO" con el destinatario enmascarado (nunca el cuerpo ni el enlace). Con `EMAIL_SEND_ENABLED=true`
+  y la configuración SMTP incompleta (`SMTP_HOST`, `EMAIL_FROM_ADDRESS`, `BACKOFFICE_BASE_URL`, o `SMTP_USERNAME` sin
+  `SMTP_PASSWORD`), la app no arranca. Un fallo de envío solo se registra en el log.
+- Probar el correo en local: copiar al `.env` los bloques "BackOffice" y "Correo del BackOffice" de `.env.example`
+  (Mailpit en `localhost:1025`), pedir el enlace en `POST /auth/forgot-password` y abrirlo en http://localhost:8025.
+  `uv run pytest -m integration` incluye un envío real a Mailpit (se salta si no responde; otra URL:
+  `MAILPIT_URL`, `MAILPIT_SMTP_PORT`).
+- En local por http, el `.env` necesita `BACKOFFICE_SESSION_COOKIE_SECURE=false` para que el navegador envíe la cookie
+  (el `.env.example` ya lo trae).
+
+CLI de arranque y emergencia (solo necesita `DATABASE_URL`; incluida en la imagen):
+
+```bash
+# Primer Administrador (datos de prueba de la sección 5.11.1; en local el correo lo captura Mailpit)
+uv run python -m app.cli.backoffice create-admin --dni 00000000 --first-names "Administrador"   --last-names "General" --username admin --email admin@backoffice.local
+# Contraseña temporal de emergencia (revoca sesiones y desbloquea)
+uv run python -m app.cli.backoffice reset-password --username admin
+# Depuración mensual (sección 5.13); requiere el usuario dueño consent_owner
+uv run python -m app.cli.backoffice purge --dry-run      # solo cuenta
+uv run python -m app.cli.backoffice purge [--audit-days 365] [--sessions-days 30]
+```
+
+`create-admin` y `reset-password` imprimen la contraseña temporal **una sola vez** por stdout (nunca va al log); hay
+que cambiarla en el primer ingreso. Los errores salen en español por stderr con código de salida 1.
 
 ## Calidad
 

@@ -107,13 +107,13 @@ def test_backoffice_base_url_trailing_slash_removed(value: str) -> None:
 def test_backoffice_values_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BACKOFFICE_BASE_URL", "https://consentimientos-bo-test.bcscode.com/")
     monkeypatch.setenv("BACKOFFICE_SESSION_COOKIE_SECURE", "false")
-    monkeypatch.setenv("BACKOFFICE_PASSWORD_MIN_LENGTH", "64")
+    monkeypatch.setenv("BACKOFFICE_PASSWORD_MIN_LENGTH", "20")
     monkeypatch.setenv("SMTP_SECURITY", " SSL ")
     monkeypatch.setenv("SMTP_PORT", "465")
     settings = Settings(_env_file=None, database_url=DB_URL)
     assert settings.backoffice_base_url == "https://consentimientos-bo-test.bcscode.com"
     assert settings.backoffice_session_cookie_secure is False
-    assert settings.backoffice_password_min_length == 64
+    assert settings.backoffice_password_min_length == 20
     assert settings.smtp_security == "ssl"
     assert settings.smtp_port == 465
 
@@ -131,13 +131,13 @@ def test_smtp_password_is_not_shown_in_repr(monkeypatch: pytest.MonkeyPatch) -> 
         ("app_env", "dev"),
         ("link_ttl_hours", 0),
         ("kizuna_callback_backoff_seconds", "5,-1"),
-        # BackOffice: enteros > 0, largo mínimo de contraseña 8–64, puerto 1–65535, seguridad SMTP del catálogo.
+        # BackOffice: enteros > 0, largo mínimo de contraseña 8–20, puerto 1–65535, seguridad SMTP del catálogo.
         ("backoffice_session_idle_minutes", 0),
         ("backoffice_session_max_hours", 0),
         ("backoffice_login_max_failed_attempts", 0),
         ("backoffice_login_lock_minutes", -1),
         ("backoffice_password_min_length", 7),
-        ("backoffice_password_min_length", 65),
+        ("backoffice_password_min_length", 21),
         ("backoffice_password_reset_ttl_minutes", 0),
         ("backoffice_password_reset_max_per_hour", 0),
         ("smtp_port", 0),

@@ -10,7 +10,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 import httpx
@@ -28,8 +28,12 @@ from sqlalchemy.ext.asyncio import (
 from alembic import command
 from app.core.config import Settings, get_settings
 from app.db.base import Base
+from app.integrations.email import EmailMessageData, get_email_sender
 from app.integrations.whatsapp import WhatsAppSendResult, get_whatsapp_sender
 from app.models import SEED_TABLES, WhatsappStatus
+
+if TYPE_CHECKING:
+    from tests.bo_helpers import BoUser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_DB_SUFFIX = "_test"
@@ -102,6 +106,8 @@ def test_settings(test_database_url: str) -> Settings:
         link_ttl_hours=168,
         phone_country_prefix="51",
         twilio_content_sid="HXtest",
+        # httpx no envía cookies Secure a http://test (sección 11, B2 tarea 7).
+        backoffice_session_cookie_secure=False,
     )
 
 
@@ -123,6 +129,21 @@ class RecordingWhatsAppSender:
 @pytest.fixture
 def whatsapp_sender() -> RecordingWhatsAppSender:
     return RecordingWhatsAppSender()
+
+
+class RecordingEmailSender:
+    """EmailSender de prueba (BackOffice, sección 7.1): guarda cada correo en `messages` en lugar de enviarlo."""
+
+    def __init__(self) -> None:
+        self.messages: list[EmailMessageData] = []
+
+    async def send(self, message: EmailMessageData) -> None:
+        self.messages.append(message)
+
+
+@pytest.fixture
+def email_sender() -> RecordingEmailSender:
+    return RecordingEmailSender()
 
 
 class RecordingNotifier:
@@ -157,8 +178,10 @@ async def api_client(
     session_factory: async_sessionmaker[AsyncSession],
     test_settings: Settings,
     whatsapp_sender: RecordingWhatsAppSender,
+    email_sender: RecordingEmailSender,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Cliente HTTP contra la app real, con la base de pruebas, la configuración de prueba y el sender de prueba.
+    """Cliente HTTP contra la app real, con la base de pruebas, la configuración de prueba y los senders de prueba
+    (WhatsApp y correo).
 
     Cada petición usa su propia sesión (y conexión): las peticiones concurrentes son concurrentes en la base.
     """
@@ -174,6 +197,7 @@ async def api_client(
         get_session_factory: lambda: session_factory,
         get_settings: lambda: test_settings,
         get_whatsapp_sender: lambda: whatsapp_sender,
+        get_email_sender: lambda: email_sender,
     }
     app.dependency_overrides.update(overrides)
     try:
@@ -185,3 +209,65 @@ async def api_client(
     finally:
         for dependency in overrides:
             app.dependency_overrides.pop(dependency, None)
+
+
+# --- BackOffice (BACKOFFICE_DEALERS.spec.md, fase B2) ---
+
+
+@pytest.fixture
+async def admin_user(session_factory: async_sessionmaker[AsyncSession]) -> "BoUser":
+    from app.models import RoleCode
+    from tests.bo_helpers import create_bo_user
+
+    return await create_bo_user(
+        session_factory,
+        username="jperez.qa",
+        dni="45871236",
+        email="jperez.qa@correo.test",
+        role_code=RoleCode.ADMIN,
+        first_names="Juan",
+        last_names="Pérez Gómez",
+    )
+
+
+@pytest.fixture
+async def operator_user(session_factory: async_sessionmaker[AsyncSession]) -> "BoUser":
+    from app.models import RoleCode
+    from tests.bo_helpers import create_bo_user
+
+    return await create_bo_user(
+        session_factory,
+        username="mquispe.qa",
+        dni="70214589",
+        email="mquispe.qa@correo.test",
+        role_code=RoleCode.OPERADOR,
+    )
+
+
+@pytest.fixture
+async def make_bo_client(api_client: httpx.AsyncClient) -> AsyncIterator[Callable[[], httpx.AsyncClient]]:
+    """Fábrica de clientes del BackOffice (cada uno con su cookie) con `X-Requested-With`, contra la misma app y las
+    mismas dependencias de prueba que `api_client`."""
+    from app.main import app
+
+    clients: list[httpx.AsyncClient] = []
+
+    def factory() -> httpx.AsyncClient:
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest", "User-Agent": "pytest-backoffice"},
+        )
+        clients.append(client)
+        return client
+
+    try:
+        yield factory
+    finally:
+        for client in clients:
+            await client.aclose()
+
+
+@pytest.fixture
+def bo_client(make_bo_client: Callable[[], httpx.AsyncClient]) -> httpx.AsyncClient:
+    return make_bo_client()

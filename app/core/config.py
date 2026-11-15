@@ -84,7 +84,8 @@ class Settings(BaseSettings):
     backoffice_session_max_hours: int = Field(default=12, gt=0)
     backoffice_login_max_failed_attempts: int = Field(default=5, gt=0)
     backoffice_login_lock_minutes: int = Field(default=15, gt=0)
-    backoffice_password_min_length: int = Field(default=8, ge=8, le=64)
+    # Rango 8–20: el máximo de la política es 20 (spec v1.2, sección 5.1).
+    backoffice_password_min_length: int = Field(default=8, ge=8, le=20)
     backoffice_password_reset_ttl_minutes: int = Field(default=30, gt=0)
     backoffice_password_reset_max_per_hour: int = Field(default=3, gt=0)
 

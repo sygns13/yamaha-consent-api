@@ -55,3 +55,14 @@ def normalize_email(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip().lower() or None
+
+
+def normalize_person_name(value: str) -> str:
+    """Nombres y apellidos de usuarios del BackOffice: trim, espacios colapsados y NFC; conserva mayúsculas y
+    minúsculas ("  María   josé " → "María josé")."""
+    return unicodedata.normalize("NFC", " ".join(value.split()))
+
+
+def normalize_username(value: str) -> str:
+    """Usuario del BackOffice: trim y minúsculas ("  JPerez " → "jperez")."""
+    return value.strip().lower()

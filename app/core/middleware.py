@@ -75,3 +75,35 @@ def _route_path(scope: Scope) -> str:
     # El router de Starlette deja la ruta resuelta en scope["route"] (FastAPI APIRoute).
     route = scope.get("route")
     return getattr(route, "path", None) or scope["path"]
+
+
+class BackofficeHeadersMiddleware:
+    """Cabeceras de las respuestas bajo /api/v1/backoffice (BACKOFFICE_DEALERS.spec.md, sección 5.7).
+
+    `Cache-Control: no-store` (ni el CDN de Firebase ni el navegador guardan datos del BackOffice) y
+    `X-Content-Type-Options: nosniff`. Aplica a toda respuesta bajo el prefijo, también a los errores.
+    """
+
+    _HEADERS = ((b"cache-control", b"no-store"), (b"x-content-type-options", b"nosniff"))
+
+    def __init__(self, app: ASGIApp, prefix: str) -> None:
+        self.app = app
+        self.prefix = prefix.rstrip("/")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if path != self.prefix and not path.startswith(self.prefix + "/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                names = {name for name, _ in self._HEADERS}
+                headers = [
+                    (name, value) for name, value in message.get("headers", []) if name.lower() not in names
+                ]
+                headers.extend(self._HEADERS)
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)

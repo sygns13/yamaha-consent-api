@@ -291,9 +291,10 @@ async def test_cors_without_origins_allows_none() -> None:
 def test_main_app_has_cors_and_request_id_in_order() -> None:
     from starlette.middleware.cors import CORSMiddleware
 
-    from app.core.middleware import RequestIdMiddleware
+    from app.core.middleware import BackofficeHeadersMiddleware, RequestIdMiddleware
     from app.main import app
 
     classes = [m.cls for m in app.user_middleware]
-    # user_middleware[0] es el más externo.
-    assert classes == [RequestIdMiddleware, CORSMiddleware]
+    # user_middleware[0] es el más externo. BackofficeHeadersMiddleware (BackOffice, sección 5.7) solo actúa bajo
+    # /api/v1/backoffice.
+    assert classes == [RequestIdMiddleware, BackofficeHeadersMiddleware, CORSMiddleware]
