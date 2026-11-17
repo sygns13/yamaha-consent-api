@@ -57,10 +57,24 @@ def normalize_email(value: str | None) -> str | None:
     return value.strip().lower() or None
 
 
+def normalize_text(value: str) -> str:
+    """Texto libre del BackOffice: trim, espacios colapsados y NFC; conserva mayúsculas y minúsculas."""
+    return unicodedata.normalize("NFC", " ".join(value.split()))
+
+
 def normalize_person_name(value: str) -> str:
     """Nombres y apellidos de usuarios del BackOffice: trim, espacios colapsados y NFC; conserva mayúsculas y
     minúsculas ("  María   josé " → "María josé")."""
-    return unicodedata.normalize("NFC", " ".join(value.split()))
+    return normalize_text(value)
+
+
+_CONTACT_PHONE_SEPARATORS = re.compile(r"[\s\-.()]")
+
+
+def normalize_contact_phone(value: str) -> str:
+    """Teléfono de contacto de un Dealer: quita espacios, guiones, puntos y paréntesis ("(01) 456-7890" →
+    "014567890"). Conserva el "+" inicial y cualquier otro carácter (la validación lo rechaza)."""
+    return _CONTACT_PHONE_SEPARATORS.sub("", value)
 
 
 def normalize_username(value: str) -> str:

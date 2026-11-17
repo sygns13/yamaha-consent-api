@@ -1,3 +1,4 @@
+import enum
 import uuid
 from datetime import datetime
 
@@ -12,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     Uuid,
+    func,
     text,
     true,
 )
@@ -22,6 +24,15 @@ from app.db.base import Base
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 
 ACTIVE_WHERE = text("is_deleted = 0")
+
+
+class UserStatus(enum.StrEnum):
+    """Estado derivado (sección 6.5): INACTIVO si `is_active = false`; si no, BLOQUEADO si `locked_until > now`; si
+    no, ACTIVO. No se guarda."""
+
+    ACTIVO = "ACTIVO"
+    INACTIVO = "INACTIVO"
+    BLOQUEADO = "BLOQUEADO"
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -65,7 +76,9 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Concurrencia optimista (propuesta): cada actualización la incrementa.
+    # Concurrencia optimista (propuesta). Sube solo al editar los datos del formulario: PUT /users y PATCH /profile
+    # (sección 4.1, decisión de la sesión 3). El login, el bloqueo y las acciones no la tocan: no generan
+    # VERSION_CONFLICT falsos.
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     is_deleted: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0, server_default="0")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -73,3 +86,11 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
     deleted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    # Reemplaza el de TimestampMixin **sin** `onupdate` (sección 4.1, decisión de la sesión 3): `updated_at` y
+    # `updated_by` cambian solo con una acción de una persona sobre la ficha (PUT, PATCH /profile, activar,
+    # desactivar, desbloquear, contraseña temporal, eliminar), que los fija de forma explícita. El login, los intentos
+    # fallidos, el bloqueo automático y los cambios de contraseña del propio usuario no los tocan. No cambia el esquema
+    # (onupdate solo existe en Python).
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), sort_order=10
+    )

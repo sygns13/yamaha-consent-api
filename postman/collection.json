@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f1c2a7e-3b9d-4c55-9a0e-2d8f5b7c1e40",
     "name": "Yamaha Consent API",
-    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
+    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n- `backoffice_base_url` y las variables `bo_*`, `user_*`, `dealer_*` y `reset_token`: carpeta `BackOffice` (ver su descripción).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -22,7 +22,17 @@
     { "key": "dealer_code", "value": "DEALER-001", "type": "string" },
     { "key": "kizuna_mock_url", "value": "http://localhost:8081", "type": "string" },
     { "key": "twilio_auth_token", "value": "", "type": "string" },
-    { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" }
+    { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" },
+    { "key": "backoffice_base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "bo_username", "value": "admin", "type": "string" },
+    { "key": "bo_password", "value": "", "type": "string" },
+    { "key": "bo_new_password", "value": "", "type": "string" },
+    { "key": "reset_token", "value": "", "type": "string" },
+    { "key": "user_id", "value": "", "type": "string" },
+    { "key": "user_version", "value": "1", "type": "string" },
+    { "key": "dealer_id", "value": "", "type": "string" },
+    { "key": "dealer_version", "value": "1", "type": "string" },
+    { "key": "bo_dealer_code", "value": "CL0001", "type": "string" }
   ],
   "item": [
     {
@@ -326,6 +336,861 @@
             },
             "description": "Payload propuesto en M5 (PENDIENTE-13). `200 {\"received\": true}`; estructura inválida → `422`."
           }
+        }
+      ]
+    },
+    {
+      "name": "BackOffice",
+      "description": "Endpoints `/api/v1/backoffice/*` (spec del BackOffice v1.2, sección 6).\n\n- `backoffice_base_url`: URL del backend (local: `http://localhost:8000`).\n- Sesión: la cookie `__session` que devuelve `Iniciar sesión`; Postman la guarda y la envía sola. Es `Secure` salvo con `BACKOFFICE_SESSION_COOKIE_SECURE=false`, así que por http (local) el `.env` necesita ese valor (el `.env.example` ya lo trae).\n- Toda mutación lleva `X-Requested-With: XMLHttpRequest` (si no, `403 CSRF_HEADER_MISSING`).\n- `bo_username` / `bo_password`: usuario y contraseña (nunca guardar una contraseña real en la colección). El primer Administrador se crea con `uv run python -m app.cli.backoffice create-admin ...` (README); su contraseña temporal obliga a ejecutar `Cambiar contraseña` (`bo_new_password`) antes que lo demás.\n- `user_id`, `user_version`, `dealer_id`, `dealer_version`: los guardan las respuestas de crear, ver y editar.\n- `reset_token`: el `t` del enlace del correo (Mailpit en local).",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "Autenticación",
+          "item": [
+            {
+              "name": "Iniciar sesión",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"username\": \"{{bo_username}}\",\n  \"password\": \"{{bo_password}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/login",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "login"]
+                },
+                "description": "Responde `Me` y la cookie `__session` (Postman la guarda sola). Con `mustChangePassword: true` (contraseña temporal), todo lo demás responde `403 PASSWORD_CHANGE_REQUIRED` hasta ejecutar `Cambiar contraseña`. Errores: `401 INVALID_CREDENTIALS`, `423 ACCOUNT_LOCKED` (5 intentos → 15 min), `403 USER_INACTIVE`."
+              }
+            },
+            {
+              "name": "Usuario con sesión (me)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/me",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "me"]
+                },
+                "description": "`200 Me`; `401` sin sesión o vencida."
+              }
+            },
+            {
+              "name": "Cambiar contraseña",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('204', () => pm.response.to.have.status(204));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"currentPassword\": \"{{bo_password}}\",\n  \"newPassword\": \"{{bo_new_password}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/change-password",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "change-password"]
+                },
+                "description": "`204`. Cierra las demás sesiones y rota la actual (nueva cookie). `422 CURRENT_PASSWORD_INVALID` o `422 PASSWORD_POLICY` (8 a 20 caracteres con mayúscula, minúscula, número y carácter especial). Después, copiar `bo_new_password` en `bo_password`."
+              }
+            },
+            {
+              "name": "Política de contraseñas",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/password-policy",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "password-policy"]
+                },
+                "description": "Público."
+              }
+            },
+            {
+              "name": "Pedir enlace de restablecimiento",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('202', () => pm.response.to.have.status(202));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"identifier\": \"{{bo_username}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/forgot-password",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "forgot-password"]
+                },
+                "description": "Público. Siempre `202` con el mismo cuerpo (no revela cuentas). En local el correo llega a Mailpit (http://localhost:8025) si `EMAIL_SEND_ENABLED=true`; copiar el `t` del enlace en la variable `reset_token`."
+              }
+            },
+            {
+              "name": "Estado del enlace",
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/password-reset/{{reset_token}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "password-reset", "{{reset_token}}"]
+                },
+                "description": "Público. `tokenStatus`: `VALID`, `EXPIRED`, `USED` o `INVALID`; token inexistente → `404`."
+              }
+            },
+            {
+              "name": "Restablecer contraseña",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"token\": \"{{reset_token}}\",\n  \"newPassword\": \"{{bo_new_password}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/password-reset",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "password-reset"]
+                },
+                "description": "Público. `204`; cierra todas las sesiones y no inicia sesión. `410` si el enlace venció o ya se usó."
+              }
+            },
+            {
+              "name": "Cerrar sesión",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('204', () => pm.response.to.have.status(204));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/auth/logout",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "auth", "logout"]
+                },
+                "description": "`204` (idempotente). Borra la cookie."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mi perfil",
+          "item": [
+            {
+              "name": "Ver mi perfil",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/profile",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "profile"]
+                },
+                "description": "Mismo cuerpo que `me`."
+              }
+            },
+            {
+              "name": "Editar mi perfil",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"firstNames\": \"Administrador\",\n  \"phone\": \"987654321\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/profile",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "profile"]
+                },
+                "description": "Nombres, apellidos, correo y celular (`phone: null` lo borra). Cambiar el correo exige `currentPassword`. `dni`, `username` o `roleCode` → `422`."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Usuarios (Administrador)",
+          "item": [
+            {
+              "name": "Roles",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/roles",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "roles"]
+                },
+                "description": "Módulo `USUARIOS`: un Operador recibe `403`."
+              }
+            },
+            {
+              "name": "Listar usuarios",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users?page=1&pageSize=20&sortBy=lastNames&sortOrder=asc",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users"],
+                  "query": [
+                    { "key": "page", "value": "1" },
+                    { "key": "pageSize", "value": "20" },
+                    { "key": "sortBy", "value": "lastNames" },
+                    { "key": "sortOrder", "value": "asc" }
+                  ]
+                },
+                "description": "`q` (DNI, nombres, apellidos, nombre completo, usuario o correo), `roleCode`, `status` (`ACTIVO`, `INACTIVO`, `BLOQUEADO`), `page`, `pageSize` (10, 20, 50 o 100), `sortBy` (`lastNames`, `username`, `createdAt`, `lastLoginAt`), `sortOrder`."
+              }
+            },
+            {
+              "name": "Crear usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('201', () => pm.response.to.have.status(201));",
+                      "if (pm.response.code === 201) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('user_id', body.user.id);",
+                      "  pm.collectionVariables.set('user_version', body.user.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dni\": \"41234567\",\n  \"firstNames\": \"Rosa\",\n  \"lastNames\": \"Huamán Ñique\",\n  \"username\": \"rhuaman\",\n  \"email\": \"rhuaman@backoffice.local\",\n  \"phone\": \"987111222\",\n  \"roleCode\": \"OPERADOR\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users"]
+                },
+                "description": "`201 {user, temporaryPassword}`: la contraseña temporal se muestra **una sola vez**. Guarda `user_id` y `user_version`. `409 DUPLICATE` (DNI, usuario o correo) con su `field`."
+              }
+            },
+            {
+              "name": "Ver usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('user_version', body.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}"]
+                },
+                "description": "Guarda `user_version`."
+              }
+            },
+            {
+              "name": "Editar usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('user_version', body.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dni\": \"41234567\",\n  \"firstNames\": \"Rosa María\",\n  \"lastNames\": \"Huamán Ñique\",\n  \"email\": \"rhuaman@backoffice.local\",\n  \"phone\": \"987111222\",\n  \"roleCode\": \"OPERADOR\",\n  \"version\": \"{{user_version}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}"]
+                },
+                "description": "Reemplazo completo (`username` no se edita; `phone` ausente o null se borra). `409 VERSION_CONFLICT`, `SELF_ACTION_NOT_ALLOWED` (el propio rol), `LAST_ADMIN` o `DUPLICATE`."
+              }
+            },
+            {
+              "name": "Desactivar usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}/deactivate",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}", "deactivate"]
+                },
+                "description": "Cierra sus sesiones. No sobre sí mismo ni sobre el último Administrador activo. Idempotente."
+              }
+            },
+            {
+              "name": "Activar usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}/activate",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}", "activate"]
+                },
+                "description": "Idempotente."
+              }
+            },
+            {
+              "name": "Desbloquear usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}/unlock",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}", "unlock"]
+                },
+                "description": "Quita el bloqueo por intentos fallidos. Idempotente."
+              }
+            },
+            {
+              "name": "Generar contraseña temporal",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}/reset-password",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}", "reset-password"]
+                },
+                "description": "`200 {temporaryPassword}` (una sola vez). Desbloquea y cierra sus sesiones. No sobre sí mismo."
+              }
+            },
+            {
+              "name": "Eliminar usuario",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('204', () => pm.response.to.have.status(204));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/users/{{user_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "users", "{{user_id}}"]
+                },
+                "description": "Borrado lógico (`204`); cierra sus sesiones. No sobre sí mismo ni sobre el último Administrador."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dealers",
+          "item": [
+            {
+              "name": "Listar dealers",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers?page=1&pageSize=20&sortBy=dealerCode&sortOrder=asc",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers"],
+                  "query": [
+                    { "key": "page", "value": "1" },
+                    { "key": "pageSize", "value": "20" },
+                    { "key": "sortBy", "value": "dealerCode" },
+                    { "key": "sortOrder", "value": "asc" }
+                  ]
+                },
+                "description": "`q` (código, razón social, RUC o persona de contacto), `departmentCode`, `provinceCode`, `districtUbigeo`, paginación, `sortBy` (`dealerCode`, `businessName`, `ruc`, `createdAt`, `updatedAt`)."
+              }
+            },
+            {
+              "name": "Registrar dealer",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('201', () => pm.response.to.have.status(201));",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('dealer_id', body.id);",
+                      "}",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('dealer_version', body.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"dealerCode\": \"{{bo_dealer_code}}\",\n  \"businessName\": \"ABC Motors S.A.C.\",\n  \"ruc\": \"20100047218\",\n  \"address\": \"Av. Ejemplo 123\",\n  \"districtUbigeo\": \"150101\",\n  \"contactEmail\": \"contacto@abcmotors.pe\",\n  \"contactPhone\": \"(01) 456-7890\",\n  \"contactName\": \"María López\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers"]
+                },
+                "description": "`201 DealerDetail`. Guarda `dealer_id` y `dealer_version`. `409 DUPLICATE` (código sin distinguir mayúsculas), `422 DISTRICT_NOT_FOUND`; RUC con dígito verificador (Anexo B)."
+              }
+            },
+            {
+              "name": "Buscar por código (lookup)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers/lookup?dealerCode={{bo_dealer_code}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers", "lookup"],
+                  "query": [
+                    { "key": "dealerCode", "value": "{{bo_dealer_code}}" }
+                  ]
+                },
+                "description": "Dealer vigente con ese código, sin distinguir mayúsculas; si no, `404`."
+              }
+            },
+            {
+              "name": "Exportar a Excel",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers/export?departmentCode=15",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers", "export"],
+                  "query": [
+                    { "key": "departmentCode", "value": "15" }
+                  ]
+                },
+                "description": "Usar **Send and Download**. Mismos filtros y orden que la lista, sin paginación. Archivo `dealers_AAAAMMDD_HHMM.xlsx` (hora de Lima)."
+              }
+            },
+            {
+              "name": "Ver dealer",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('dealer_version', body.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers/{{dealer_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers", "{{dealer_id}}"]
+                },
+                "description": "Guarda `dealer_version`."
+              }
+            },
+            {
+              "name": "Editar dealer",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code < 300) {",
+                      "  const body = pm.response.json();",
+                      "  pm.collectionVariables.set('dealer_version', body.version);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"businessName\": \"ABC Motors S.A.C.\",\n  \"ruc\": \"20100047218\",\n  \"address\": \"Av. Nueva 456\",\n  \"districtUbigeo\": \"150101\",\n  \"contactEmail\": \"contacto@abcmotors.pe\",\n  \"contactPhone\": \"(01) 456-7890\",\n  \"contactName\": \"María López\",\n  \"version\": \"{{dealer_version}}\"\n}",
+                  "options": {
+                    "raw": { "language": "json" }
+                  }
+                },
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers/{{dealer_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers", "{{dealer_id}}"]
+                },
+                "description": "Reemplazo completo de los campos editables (`dealerCode` no se edita: enviarlo → `422`). `409 VERSION_CONFLICT`."
+              }
+            },
+            {
+              "name": "Eliminar dealer",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('204', () => pm.response.to.have.status(204));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  { "key": "X-Requested-With", "value": "XMLHttpRequest" }
+                ],
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/dealers/{{dealer_id}}",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "dealers", "{{dealer_id}}"]
+                },
+                "description": "Borrado lógico (`204`); el código queda libre para un registro nuevo."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ubigeo",
+          "item": [
+            {
+              "name": "Departamentos",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/ubigeo/departments",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "ubigeo", "departments"]
+                },
+                "description": "Ordenados por nombre."
+              }
+            },
+            {
+              "name": "Provincias de Lima",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/ubigeo/departments/15/provinces",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "ubigeo", "departments", "15", "provinces"]
+                },
+                "description": "Departamento inexistente → `404`."
+              }
+            },
+            {
+              "name": "Distritos de Lima (provincia)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/ubigeo/provinces/1501/districts",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "ubigeo", "provinces", "1501", "districts"]
+                },
+                "description": "Provincia inexistente → `404`."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bitácora (Administrador)",
+          "item": [
+            {
+              "name": "Consultar bitácora",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": ["pm.test('200', () => pm.response.to.have.status(200));"]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{backoffice_base_url}}/api/v1/backoffice/audit-logs?from=2026-11-01&to=2026-11-30&page=1&pageSize=20",
+                  "host": ["{{backoffice_base_url}}"],
+                  "path": ["api", "v1", "backoffice", "audit-logs"],
+                  "query": [
+                    { "key": "from", "value": "2026-11-01" },
+                    { "key": "to", "value": "2026-11-30" },
+                    { "key": "page", "value": "1" },
+                    { "key": "pageSize", "value": "20" }
+                  ]
+                },
+                "description": "`from` y `to` (AAAA-MM-DD en hora de Lima; `to` incluye todo el día), `actorUserId`, `action`, `entityType` (`USER`, `DEALER`), `entityId`, paginación. Orden: más reciente primero."
+              }
+            }
+          ]
         }
       ]
     }

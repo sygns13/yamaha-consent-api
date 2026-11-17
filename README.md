@@ -154,6 +154,57 @@ uv run python -m app.cli.backoffice purge [--audit-days 365] [--sessions-days 30
 `create-admin` y `reset-password` imprimen la contraseña temporal **una sola vez** por stdout (nunca va al log); hay
 que cambiarla en el primer ingreso. Los errores salen en español por stderr con código de salida 1.
 
+## BackOffice: usuarios, perfil y roles (fase B4)
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET / PATCH | `/profile` | Cualquier usuario con sesión. Mismo cuerpo que `/auth/me`; cambiar el correo exige `currentPassword` |
+| GET | `/roles` | Módulo `USUARIOS` (solo Administrador) |
+| GET / POST | `/users` | `USUARIOS`. El alta responde la contraseña temporal **una sola vez** |
+| GET / PUT / DELETE | `/users/{userId}` | `USUARIOS`. `PUT` exige `version` (`409 VERSION_CONFLICT`); `username` no se edita |
+| POST | `/users/{userId}/activate` · `/deactivate` · `/unlock` · `/reset-password` | `USUARIOS` |
+
+- Listas: `page`, `pageSize` (10, 20, 50 o 100), `sortBy`, `sortOrder`, `q` (DNI, nombres, apellidos, nombre completo,
+  usuario o correo; `%` y `_` se buscan literales), `roleCode`, `status` (`ACTIVO`, `INACTIVO`, `BLOQUEADO`).
+  Respuesta `{"items", "total", "page", "pageSize"}`.
+- Nadie puede desactivarse, eliminarse, cambiarse el rol ni generarse una contraseña temporal (`409
+  SELF_ACTION_NOT_ALLOWED`), y siempre queda al menos un Administrador activo (`409 LAST_ADMIN`).
+- Desactivar, eliminar y generar una contraseña temporal cierran las sesiones del afectado.
+- `version` sube solo al editar (`PUT /users`, `PATCH /profile`); `updatedAt`/`updatedBy` cambian con toda acción de
+  una persona sobre la ficha, no con el login ni con los cambios de contraseña propios. Una edición sin cambios no deja
+  bitácora.
+
+## BackOffice: dealers, ubigeo, exportación y bitácora (fase B5)
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET / POST | `/dealers` | Módulo `DEALERS` (Administrador y Operador) |
+| GET | `/dealers/lookup?dealerCode=` | `DEALERS`. Dealer vigente con ese código, sin distinguir mayúsculas |
+| GET | `/dealers/export` | `DEALERS`. Excel `.xlsx` con los filtros y el orden de la lista |
+| GET / PUT / DELETE | `/dealers/{dealerId}` | `DEALERS`. `PUT` exige `version`; `dealerCode` no se edita |
+| GET | `/ubigeo/departments` · `/ubigeo/departments/{departmentCode}/provinces` · `/ubigeo/provinces/{provinceCode}/districts` | `DEALERS`. Ordenados por nombre |
+| GET | `/audit-logs` | Módulo `AUDITORIA` (solo Administrador) |
+
+- Dealer: `dealerCode` (único sin distinguir mayúsculas entre los vigentes; uno eliminado se puede volver a registrar),
+  `ruc` (11 dígitos con dígito verificador, `app/utils/ruc.py`), `address`, `districtUbigeo` (debe existir: si no,
+  `422 DISTRICT_NOT_FOUND`) y `contactEmail` obligatorios; `businessName`, `contactPhone` y `contactName` opcionales.
+- Lista: `q` (código, razón social, RUC o persona de contacto), `departmentCode`, `provinceCode`, `districtUbigeo`,
+  paginación y `sortBy` (`dealerCode`, `businessName`, `ruc`, `createdAt`, `updatedAt`).
+- Exportación: hoja `Dealers`, archivo `dealers_AAAAMMDD_HHMM.xlsx` (hora de Lima); RUC, ubigeo y teléfono como texto;
+  ningún texto se escribe como fórmula. Queda en la bitácora (`DEALERS_EXPORTED`).
+- Bitácora: `from`/`to` (AAAA-MM-DD en hora de Lima; `to` incluye todo el día), `actorUserId`, `action`, `entityType`,
+  `entityId`; orden fijo, la más reciente primero.
+- `get_active_dealer_by_code()` (`app/services/backoffice/dealers.py`) es la consulta que reutilizará la landing.
+
+### OpenAPI para el frontend del BackOffice
+
+El frontend genera sus tipos desde una copia del OpenAPI (`yamaha-consent-backoffice/docs/openapi.json`). Regenerarla
+cada vez que cambie la API:
+
+```bash
+uv run python -m scripts.export_openapi ../yamaha-consent-backoffice/docs/openapi.json
+```
+
 ## Calidad
 
 ```bash
@@ -173,9 +224,15 @@ responde, se saltan; otra URL: `KIZUNA_MOCK_URL=http://host:puerto`.
 
 ## Postman
 
-Colección en `postman/collection.json`: health, endpoints de KIZUNA, landing, webhook de Twilio y mock de KIZUNA.
-Variables: `base_url`, `api_key`, `token`, `transaction_id` (el `IdentifierId`), `customer_id`, `dealer_code`,
-`kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
+Colección en `postman/collection.json`: health, endpoints de KIZUNA, landing, webhook de Twilio, mock de KIZUNA y
+BackOffice. Variables: `base_url`, `api_key`, `token`, `transaction_id` (el `IdentifierId`), `customer_id`,
+`dealer_code`, `kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
+
+Carpeta **BackOffice** (sin API Key): variable `backoffice_base_url`; Postman guarda la cookie `__session` del login y
+la envía sola. Las mutaciones ya llevan `X-Requested-With: XMLHttpRequest`. Usuario y contraseña en `bo_username` y
+`bo_password` (nunca guardar una contraseña real en la colección); `user_id`, `user_version`, `dealer_id` y
+`dealer_version` los guardan las respuestas. En local por http, el `.env` necesita
+`BACKOFFICE_SESSION_COOKIE_SECURE=false` (si no, la cookie es `Secure` y no viaja por http).
 
 El token del enlace solo viaja en el WhatsApp y nunca se guarda ni se loguea. Para obtener uno en local, después de
 `Registrar cliente`:

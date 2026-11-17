@@ -11,7 +11,7 @@ from app.models.kizuna_notification import KizunaNotification
 from app.models.password_reset_token import PasswordResetToken
 from app.models.role import BackofficeModule, ModuleCode, Role, RoleCode, RoleModule
 from app.models.ubigeo import UbigeoDepartment, UbigeoDistrict, UbigeoProvince
-from app.models.user import User
+from app.models.user import User, UserStatus
 from app.models.user_session import SessionRevokedReason, UserSession
 from app.models.whatsapp import WhatsappMessage, WhatsappMessageEvent
 
@@ -55,6 +55,7 @@ __all__ = [
     "UbigeoProvince",
     "User",
     "UserSession",
+    "UserStatus",
     "WhatsappMessage",
     "WhatsappMessageEvent",
     "WhatsappStatus",

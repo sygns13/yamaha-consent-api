@@ -64,7 +64,6 @@ PERSON_NAME_MAX_LENGTH = 100
 DNI_INVALID = "El DNI debe tener 8 dígitos."
 PERSON_NAME_INVALID = "El nombre solo puede contener letras, espacios, apóstrofo, punto y guion."
 PERSON_NAME_EMPTY = "No puede estar vacío"
-PERSON_NAME_TOO_LONG = f"Debe tener como máximo {PERSON_NAME_MAX_LENGTH} caracteres"
 USERNAME_INVALID = (
     "El usuario debe tener de 4 a 30 caracteres: letras minúsculas, números, punto, guion o guion bajo, y "
     "empezar con una letra."
@@ -90,13 +89,13 @@ def _is_latin_letter(char: str) -> bool:
     return unicodedata.category(char).startswith("L") and unicodedata.name(char, "").startswith("LATIN ")
 
 
-def validate_person_name(name: str) -> str:
-    """Nombres o apellidos ya normalizados (normalize_person_name): 1–100 caracteres, letras, espacios, apóstrofo,
-    punto y guion, con al menos una letra."""
+def validate_person_name(name: str, max_length: int = PERSON_NAME_MAX_LENGTH) -> str:
+    """Nombres o apellidos ya normalizados (normalize_person_name): 1–100 caracteres (`max_length`; la persona de
+    contacto de un Dealer admite 150), letras, espacios, apóstrofo, punto y guion, con al menos una letra."""
     if not name:
         raise ValueError(PERSON_NAME_EMPTY)
-    if len(name) > PERSON_NAME_MAX_LENGTH:
-        raise ValueError(PERSON_NAME_TOO_LONG)
+    if len(name) > max_length:
+        raise ValueError(f"Debe tener como máximo {max_length} caracteres")
     if not all(_is_latin_letter(c) or c in _PERSON_NAME_SYMBOLS for c in name) or not any(
         _is_latin_letter(c) for c in name
     ):
@@ -121,4 +120,31 @@ def validate_mobile(phone: str) -> str:
     """Celular de un usuario del BackOffice, ya normalizado con normalize_phone: 9 dígitos."""
     if len(phone) != PHONE_DIGITS or not phone.isascii() or not phone.isdigit():
         raise ValueError(MOBILE_INVALID)
+    return phone
+
+
+# --- Dealers del BackOffice (BACKOFFICE_DEALERS.spec.md, sección 6.6; mensajes del Anexo A.3) ---
+
+# Con punto final, como el Anexo A.3. validate_dealer (v1.4, KIZUNA) conserva su texto sin punto: es parte de un
+# contrato existente.
+DEALER_CODE_EMPTY = "El código del dealer no puede estar vacío."
+DISTRICT_REQUIRED = "Selecciona un distrito."
+CONTACT_PHONE_INVALID = "El teléfono debe tener entre 6 y 15 dígitos."
+
+_UBIGEO_DISTRICT = re.compile(r"[0-9]{6}")
+_CONTACT_PHONE = re.compile(r"\+?[0-9]{6,15}")
+
+
+def validate_district_ubigeo(code: str) -> str:
+    """Código INEI de distrito: 6 dígitos (que exista lo verifica el servicio: 422 DISTRICT_NOT_FOUND)."""
+    if not _UBIGEO_DISTRICT.fullmatch(code):
+        raise ValueError(DISTRICT_REQUIRED)
+    return code
+
+
+def validate_contact_phone(phone: str) -> str:
+    """Teléfono de contacto ya normalizado (normalize_contact_phone): un "+" opcional y de 6 a 15 dígitos (propuesta,
+    sección 4.3)."""
+    if not _CONTACT_PHONE.fullmatch(phone):
+        raise ValueError(CONTACT_PHONE_INVALID)
     return phone

@@ -1,6 +1,7 @@
 """Helpers de los tests del BackOffice (usan la base de pruebas de conftest.py)."""
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.backoffice_security import SESSION_COOKIE_NAME
 from app.core.passwords import hash_password
-from app.models import AuditLog, PasswordResetToken, RoleCode, User, UserSession
+from app.models import AuditLog, Dealer, PasswordResetToken, RoleCode, User, UserSession
+from app.utils.ruc import ruc_check_digit
 
 Sessions = async_sessionmaker[AsyncSession]
 
@@ -86,6 +88,14 @@ async def login_as(client: httpx.AsyncClient, user: BoUser, password: str | None
     )
 
 
+async def logged_client(make_client: Callable[[], httpx.AsyncClient], user: BoUser) -> httpx.AsyncClient:
+    """Cliente del BackOffice (fixture `make_bo_client`) con la sesión de `user` iniciada."""
+    client = make_client()
+    response = await login_as(client, user)
+    assert response.status_code == 200, response.text
+    return client
+
+
 def session_cookie(client: httpx.AsyncClient) -> str | None:
     return client.cookies.get(SESSION_COOKIE_NAME)
 
@@ -133,3 +143,39 @@ async def reset_tokens(sessions: Sessions, user_id: uuid.UUID) -> list[PasswordR
                 .order_by(PasswordResetToken.created_at)
             )
         )
+
+
+# --- Dealers (fase B5) ---
+
+
+def make_ruc(number: int, prefix: str = "20") -> str:
+    """RUC válido (Anexo B) derivado de `number`."""
+    first_ten = f"{prefix}{number:08d}"
+    return f"{first_ten}{ruc_check_digit(first_ten)}"
+
+
+async def create_dealer_row(sessions: Sessions, *, dealer_code: str, **values: Any) -> uuid.UUID:
+    """Inserta un dealer directamente en la base (para listas y exportación)."""
+    defaults: dict[str, Any] = {
+        "ruc": "20100047218",
+        "address": "Av. Ejemplo 123",
+        "district_ubigeo": "150101",
+        "contact_email": "contacto@dealer.test",
+    }
+    async with sessions.begin() as session:
+        dealer = Dealer(dealer_code=dealer_code, **(defaults | values))
+        session.add(dealer)
+        await session.flush()
+        return dealer.id
+
+
+async def get_dealer(sessions: Sessions, dealer_id: uuid.UUID) -> Dealer:
+    async with sessions() as session:
+        dealer = await session.get(Dealer, dealer_id)
+        assert dealer is not None
+        return dealer
+
+
+async def update_dealer_row(sessions: Sessions, dealer_id: uuid.UUID, **values: Any) -> None:
+    async with sessions.begin() as session:
+        await session.execute(update(Dealer).where(Dealer.id == dealer_id).values(**values))

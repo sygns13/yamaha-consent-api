@@ -10,8 +10,13 @@ registra `route.path` (quedaría `/auth/login` en lugar de `/api/v1/backoffice/a
 
 from fastapi import APIRouter, Depends
 
-from app.api.v1.backoffice import auth
+from app.api.v1.backoffice import audit, auth, dealers, profile, ubigeo, users
 from app.core.backoffice_security import require_csrf_header
 
 router = APIRouter(dependencies=[Depends(require_csrf_header)])
 router.include_router(auth.router)
+router.include_router(profile.router)
+router.include_router(users.router)
+router.include_router(dealers.router)
+router.include_router(ubigeo.router)
+router.include_router(audit.router)

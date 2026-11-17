@@ -10,7 +10,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `REQUERIMIENTOS_TECNICOS.md` (v1.4; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
-- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.2): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
+- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.3): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
 
@@ -53,9 +53,24 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `app/api/v1/backoffice/`: `__init__.py` is the aggregator (no prefix; CSRF dependency). Each sub-router declares the
   **full** prefix (`f"{BACKOFFICE_PREFIX}/auth"`): in FastAPI 0.162 a nested router's include prefix is not part of
   `route.path`, and `RequestIdMiddleware` logs `route.path`. `auth.py`: login, logout, me, change-password,
-  password-policy.
+  password-policy, forgot/reset. `profile.py` (B4): `GET/PATCH /profile` (`CurrentSession`). `users.py` (B4): `/roles`
+  and `/users*`, all behind `UsersModule = Depends(require_module(USUARIOS))`; path param `{userId}` via
+  `Path(alias="userId")`. Mutations commit in the service and then re-read the user (`get_user_detail`) for the body.
+  B5: `dealers.py` (`/lookup` and `/export` declared before `/{dealerId}`; export returns a `Response` with the xlsx
+  bytes and `Content-Disposition`), `ubigeo.py` (tag `backoffice-catalogs`; path codes are not validated: a
+  malformed code is a 404 like an unknown one), `audit.py` (`/audit-logs`, module `AUDITORIA`). Dealers and ubigeo use
+  `require_module(DEALERS)` (Admin and Operator).
 - `app/schemas/backoffice/`: `common.py` (`BackofficeRequest` camelCase + `extra="forbid"`, `BackofficeResponse`,
-  `ErrorResponse`), `auth.py` (`Me`, ...), `users.py` (`UserCreateRequest` with the user field validators).
+  `ErrorResponse`, `error_responses(*codes)` for OpenAPI; lists: `ListQuery` (`page`, `pageSize` validated by hand
+  because `Literal[int]` rejects the query string `"20"`, `sortOrder`), `SearchText` (trim, max 100, empty → None),
+  generic `Page[T]`, `UserRef`), `auth.py` (`Me`, `CodeName`, ...), `users.py` (`UserCreateRequest` with the user field
+  validators; B4: `UserUpdateRequest`, `ProfileUpdateRequest` (absent = unchanged via `model_fields_set`; null names or
+  email → 422), `UserListQuery`, `UserSummary`, `UserDetail`, `UserCreatedResponse`, `TemporaryPasswordResponse`).
+  List query models are used as `Annotated[Model, Query()]`; unknown query params are ignored. Query base classes:
+  `QueryModel` (camelCase aliases) → `PageQuery` (`page`, `pageSize`) → `ListQuery` (+ `sortOrder`). B5: `dealers.py`
+  (`DealerCreateRequest`, `DealerUpdateRequest` (no `dealerCode` → extra field = 422), `DealerFilterQuery` (export),
+  `DealerListQuery`, `DealerLookupQuery`, `DealerDetail`), `audit.py` (`AuditLogQuery` with `from_` aliased to
+  `from`; `to < from` → 422 on `to`; `AuditLogItem`). No `ubigeo.py` schema: ubigeo responses reuse `CodeName`.
 - `app/services/backoffice/`:
   - `audit.py`: `record_audit(db, action, context=AuditContext, ...)` adds the row to the caller's transaction.
     `AuditContext.from_request` (IP via `client_ip`, user agent, `request_id_var`); the CLI uses `AuditContext()`.
@@ -63,9 +78,38 @@ commands. Read it first. This file only adds what is specific to this repo and t
     `purge`), `purge_user_sessions` (on every successful login, 30 days).
   - `auth.py`: `login` (section 5.5; failed attempts commit before raising), `logout`, `change_password` (revokes all
     sessions with `PASSWORD_CHANGED` and creates a new one = rotation), `build_me`.
-  - `users.py`: `create_user`, `ensure_unique_user_fields`, `duplicate_from_integrity_error`,
-    `reset_temporary_password`. **Built ahead of B4** for the CLI; B4 reuses them for `POST /users` and
-    `POST /users/{id}/reset-password` (pass `source=SOURCE_API` and the actor).
+  - `users.py`: `create_user`, `ensure_unique_user_fields`, `duplicate_from_integrity_error`, `flush_or_duplicate`,
+    `reset_temporary_password` (built in B2 for the CLI). B4 adds `list_users`, `get_user_detail`, `user_refs`
+    (`UserRef` by id, deleted users included; reuse it for dealers and audit logs), `update_user`, `activate_user`,
+    `deactivate_user`, `unlock_user`, `reset_password_by_admin`, `delete_user`. Owner's decisions (session 3, spec
+    4.1): `version` +1 only on `PUT /users` and `PATCH /profile`; `updated_at`/`updated_by` only on a person's action
+    on the record (set explicitly: **`User.updated_at` has no `onupdate`**, so login, lockout and own password changes
+    do not touch it); no real change → no audit, no version bump; activate/deactivate/unlock are idempotent (audit
+    only on change). Lock order: advisory lock `hashtext('backoffice:admins')` first (deactivate, delete, PUT to a
+    non-ADMIN role), then the user row `FOR UPDATE`, then sessions/tokens. `LAST_ADMIN` is only reachable through the
+    API in a race (the actor is always another active Admin and self-actions fail first); the sequential case is
+    tested on the service.
+  - `profile.py` (B4): `update_profile` (`currentPassword` checked only if the email changes, before the uniqueness
+    check; `updated_by` = the user).
+  - `listing.py` (B4): `like_pattern` / `contains_any` (`ILIKE` with `%`, `_`, `\` escaped), `paginate` (total +
+    page). Read-only services end their transaction with `commit`, never `rollback`: a rollback expires every loaded
+    object even with `expire_on_commit=False`, and a later attribute access would lazy-load (fails in async).
+  - `audit.py` also has `AuditContextDep`, `diff_changes(before, after)` → `{"field": {"from", "to"}}` (camelCase)
+    and (B5) `list_audit_logs` (`from` at 00:00 and `to` until the end of the day in `KIZUNA_TIMEZONE`; fixed order
+    `occurred_at DESC, id DESC`; INET → `str`).
+  - `refs.py` (B5): `user_refs(db, ids)` → `{id: UserRef}` (deleted users included) and `full_name`. Lives apart
+    because `audit.py` cannot import `users.py` (which imports `audit.py`).
+  - `dealers.py` (B5): `get_active_dealer_by_code(session, code)` (**reuse point for the landing**, spec 13 F1;
+    `lower(dealer_code) = lower(:code) AND is_deleted = 0`, uses the partial unique index), `DealerRecord` (dealer +
+    district + province + department), `get_dealer_detail`, `list_dealers`, `all_dealers` (export), `create_dealer`,
+    `update_dealer`, `delete_dealer`. Same rules as users: `version` +1 only on PUT, no real change → no audit;
+    checks: 404 → `VERSION_CONFLICT` → `DISTRICT_NOT_FOUND` (create: `DISTRICT_NOT_FOUND` → `DUPLICATE`). A race on
+    `uq_dealers_active_code` gives the same 409. Logs only carry `dealer_id` and `dealer_code`.
+  - `exports.py` (B5): `build_dealers_workbook` (openpyxl, run with `run_in_threadpool`; every text cell is forced to
+    `data_type = "s"` so `=1+1` is never a formula; control chars stripped with `ILLEGAL_CHARACTERS_RE`; datetimes
+    in Lima time without tzinfo, `dd/mm/yyyy hh:mm`) and `export_dealers` (writes `DEALERS_EXPORTED` with the
+    non-empty filters and `rows`).
+  - `ubigeo.py` (B5): departments/provinces/districts ordered by name; unknown → 404.
   - `password_reset.py` (B3): `request_password_reset` (forgot-password; returns the email to send or `None`, always
     the same 202 upstream; hourly limit counted under the user's `FOR UPDATE`), `get_reset_token_status`
     (`USED` > `INVALID` > `EXPIRED`), `reset_password`, `invalidate_pending_reset_tokens` (section 4.3: also on any
@@ -76,7 +120,11 @@ commands. Read it first. This file only adds what is specific to this repo and t
     texts; every dynamic value goes through `html.escape`; brand colors copied from the landing's `global.css`.
   - Audit actor: `NULL` for anonymous actions (unknown-user login failure, reset request, reset completion) and the
     CLI; failed logins of an **existing** user record that user as actor (section 4.3 wording).
-- `app/utils/`: `normalization.py` + `normalize_person_name`, `normalize_username`; `validation.py` + `validate_dni`,
+- `app/utils/`: `ruc.py` (B5, Annex B: `normalize_ruc`, `ruc_check_digit`, `is_valid_ruc`, `validate_ruc`);
+  `normalization.py` + `normalize_text` (trim, collapse, NFC), `normalize_contact_phone` (B5), `normalize_person_name`,
+  `normalize_username`; `validation.py` (B5) + `validate_district_ubigeo`, `validate_contact_phone`,
+  `DEALER_CODE_EMPTY` (Annex A.3 text, with a period: `validate_dealer` keeps its v1.4 text, a KIZUNA test asserts
+  it), `validate_person_name(name, max_length=100)` (contact name: 150); `validation.py` + `validate_dni`,
   `validate_person_name` (Latin letters incl. accents/Ñ, space, `'`, `’`, `.`, `-`, at least one letter, max 100),
   `validate_username`, `validate_user_email`, `validate_mobile` (Annex A.3 messages); `tokens.py` + `generate_token`.
 - `app/integrations/email.py` (B3): `EmailMessageData`, `EmailSender` protocol, `FakeEmailSender` (logs masked
@@ -109,7 +157,13 @@ commands. Read it first. This file only adds what is specific to this repo and t
   and never fill in Ubigeo data from memory; a missing district goes in a new migration.
 - Tests: `test_bo_schema.py` (seeds, Ubigeo, constraints), `test_bo_migrations.py` (creates and drops its own empty
   database `<db>_bo_migrations` to run upgrade/downgrade), `test_bo_ubigeo_dataset.py` (offline, fake `fetch`),
-  `test_bo_auth.py`, `test_bo_passwords.py`, `test_bo_cli.py`, `test_bo_password_reset.py`, `test_bo_email.py`.
+  `test_bo_auth.py`, `test_bo_passwords.py`, `test_bo_cli.py`, `test_bo_password_reset.py`, `test_bo_email.py`,
+  `test_bo_users.py`, `test_bo_profile.py` (B4; `logged_client(make_bo_client, user)` in `bo_helpers.py` returns a
+  client with that user's session), `test_bo_dealers.py`, `test_bo_ruc.py`, `test_bo_ubigeo.py`, `test_bo_export.py`,
+  `test_bo_audit.py`, `test_bo_postman.py` (the Postman "BackOffice" folder covers every BackOffice operation of the
+  OpenAPI and sends the CSRF header), `test_bo_openapi_export.py` (B5; helpers `create_dealer_row`, `make_ruc`).
+  - **Collation:** the local `postgres:16.15-alpine3.24` (musl) sorts text by code point (`Ñ` after `Z`); Cloud SQL
+    probably will not (unverified). Never assert an order between non-ASCII strings; take Ubigeo counts from `alembic/data/ubigeo_inei.csv`.
   - `api_client` overrides `get_email_sender` with `RecordingEmailSender` (`email_sender` fixture, `.messages`).
     The reset token only exists in the recorded email text (regex on the link).
   - `test_bo_email.py::test_reset_email_reaches_mailpit` (`integration`) sends a real email to Mailpit through
@@ -123,3 +177,11 @@ commands. Read it first. This file only adds what is specific to this repo and t
     so the real app is never modified.
   - `test_bo_cli.py::test_purge_requires_the_owner` creates a temporary role (`bo_purge_test_*`) with
     `consent_app`-like grants and drops it at the end; it skips if the DB user cannot create roles.
+
+## Postman and the frontend OpenAPI snapshot
+
+- `postman/collection.json` is hand-formatted (short objects on one line). Add requests by inserting text, never by
+  re-dumping the whole JSON. The "BackOffice" folder (`auth: noauth`, `{{backoffice_base_url}}`) must cover every
+  `/api/v1/backoffice` operation (`tests/test_bo_postman.py`).
+- `scripts/export_openapi.py` writes the same JSON as `/openapi.json`. After any API change, regenerate
+  `../yamaha-consent-backoffice/docs/openapi.json` with it (ask the owner before touching that repo).

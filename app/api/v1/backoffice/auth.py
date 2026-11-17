@@ -31,21 +31,17 @@ from app.schemas.backoffice.auth import (
     PasswordResetRequest,
     ResetTokenStatusResponse,
 )
-from app.schemas.backoffice.common import ErrorResponse
+from app.schemas.backoffice.common import error_responses
 from app.services.backoffice import auth as auth_service
 from app.services.backoffice import password_reset as reset_service
-from app.services.backoffice.audit import AuditContext, get_audit_context
+from app.services.backoffice.audit import AuditContextDep
 from app.services.backoffice.sessions import AuthenticatedSession
 
 router = APIRouter(prefix=f"{BACKOFFICE_PREFIX}/auth", tags=["backoffice-auth"])
 
-AuditContextDep = Annotated[AuditContext, Depends(get_audit_context)]
 PendingChangeSession = Annotated[AuthenticatedSession, Depends(get_current_session_allowing_password_change)]
 EmailSenderDep = Annotated[EmailSender, Depends(get_email_sender)]
-
-
-def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
-    return {code: {"model": ErrorResponse} for code in codes}
+_errors = error_responses
 
 
 @router.post(

@@ -89,6 +89,10 @@ ACCOUNT_LOCKED = (
     "Tu usuario está bloqueado temporalmente por intentos fallidos. Inténtalo nuevamente en {minutes} o "
     "comunícate con el Administrador."
 )
+VERSION_CONFLICT = "El registro fue modificado por otro usuario. Recarga la página e inténtalo de nuevo."
+LAST_ADMIN = "Debe quedar al menos un Administrador activo."
+SELF_ACTION_NOT_ALLOWED = "No puedes realizar esta acción sobre tu propio usuario."
+DISTRICT_NOT_FOUND = "El distrito seleccionado no existe."
 
 
 class BackofficeError(Exception):
@@ -142,6 +146,15 @@ def account_locked(locked_until: datetime, now: datetime) -> BackofficeError:
 
 def user_inactive() -> BackofficeError:
     return BackofficeError(403, ErrorCode.USER_INACTIVE, USER_INACTIVE)
+
+
+def not_found(detail: str) -> BackofficeError:
+    """404 NOT_FOUND con el texto de la entidad ("No existe el usuario.", "No existe el dealer.", ...)."""
+    return BackofficeError(404, ErrorCode.NOT_FOUND, detail)
+
+
+def version_conflict() -> BackofficeError:
+    return BackofficeError(409, ErrorCode.VERSION_CONFLICT, VERSION_CONFLICT)
 
 
 # --- Cookie de sesión (sección 5.3) ---
