@@ -10,7 +10,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `REQUERIMIENTOS_TECNICOS.md` (v1.4; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
-- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.3): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
+- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.4): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
 
@@ -184,4 +184,6 @@ commands. Read it first. This file only adds what is specific to this repo and t
   re-dumping the whole JSON. The "BackOffice" folder (`auth: noauth`, `{{backoffice_base_url}}`) must cover every
   `/api/v1/backoffice` operation (`tests/test_bo_postman.py`).
 - `scripts/export_openapi.py` writes the same JSON as `/openapi.json`. After any API change, regenerate
-  `../yamaha-consent-backoffice/docs/openapi.json` with it (ask the owner before touching that repo).
+  `../yamaha-consent-backoffice/docs/openapi.json` with it (ask the owner before touching that repo), then run
+  `npm run api:types` in the frontend: its `src/lib/api-schema.d.ts` is versioned and `tests/api-types.test.ts`
+  fails if it is stale (spec v1.4, section 8.2).
