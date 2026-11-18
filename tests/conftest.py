@@ -29,6 +29,7 @@ from alembic import command
 from app.core.config import Settings, get_settings
 from app.db.base import Base
 from app.integrations.email import EmailMessageData, get_email_sender
+from app.integrations.kizuna_oauth import get_kizuna_token_provider
 from app.integrations.whatsapp import WhatsAppSendResult, get_whatsapp_sender
 from app.models import SEED_TABLES, WhatsappStatus
 
@@ -38,6 +39,14 @@ if TYPE_CHECKING:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_DB_SUFFIX = "_test"
 TEST_API_KEY = "test-api-key"
+
+
+@pytest.fixture(autouse=True)
+def fresh_kizuna_token_provider() -> Iterator[None]:
+    """Cada test empieza sin token de KIZUNA en caché (el proveedor es único por proceso y su lock es del loop)."""
+    get_kizuna_token_provider.cache_clear()
+    yield
+    get_kizuna_token_provider.cache_clear()
 
 
 def _test_database_url() -> str:

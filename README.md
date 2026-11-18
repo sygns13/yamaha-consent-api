@@ -63,9 +63,18 @@ Run (`--forwarded-allow-ips '*'`). La imagen no incluye `.env`, `tests/`, `mocks
 - `POST /kizuna/consent-result`: valida el payload con el contrato de KIZUNA (`IdentifierId`, `customerId`,
   `dealerCode`, `consentDateTime`, `personalDataConsent`, `marketingConsentYMDP`, `marketingConsentDEALER`) y
   responde `200 {"received": true}`.
-- `GET /kizuna/received`: payloads recibidos y total de peticiones. `DELETE /kizuna/received`: reinicia.
+- `GET /kizuna/received`: payloads recibidos (con `authenticated`: si llegaron con un Bearer vigente del mock), total
+  de peticiones y `token_requests`. `DELETE /kizuna/received`: reinicia.
 - Simular fallos: `MOCK_FAIL_TIMES=3 docker compose up -d kizuna-mock` (500 las 3 primeras veces) o
   `MOCK_RESPONSE_DELAY_SECONDS=15` (timeout).
+- OAuth 2.0 (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, sección 6): `POST /kizuna/oauth/token` imita al
+  Entra ID de KIZUNA (client credentials; `mock-client` / `mock-secret`, configurables con `MOCK_CLIENT_ID` /
+  `MOCK_CLIENT_SECRET`). `MOCK_REQUIRE_AUTH=true docker compose up -d kizuna-mock` hace que el callback exija ese
+  Bearer; `MOCK_TOKEN_FAIL_TIMES=N` falla los primeros N pedidos de token; `DELETE /kizuna/oauth/tokens` revoca los
+  tokens emitidos. Después de actualizar el mock: `docker compose up -d --build kizuna-mock`.
+- Probar la API en modo `oauth2` contra el mock: en el `.env`, `KIZUNA_CALLBACK_AUTH_MODE=oauth2`,
+  `KIZUNA_OAUTH_TOKEN_URL=http://localhost:8081/kizuna/oauth/token`, `KIZUNA_OAUTH_CLIENT_ID=mock-client`,
+  `KIZUNA_OAUTH_CLIENT_SECRET=mock-secret` y `KIZUNA_OAUTH_SCOPE=api://kizuna-mock/.default`.
 
 ## Configuración
 
@@ -326,11 +335,11 @@ printf '%s' "$API_KEY" | gcloud secrets create API_KEY --replication-policy=auto
 read -rs TWILIO_AUTH_TOKEN
 printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets create TWILIO_AUTH_TOKEN --replication-policy=automatic --data-file=-
 
-# Solo cuando se conozca la autenticación de KIZUNA (PENDIENTE-13):
-read -rs KZ_AUTH
-printf '%s' "$KZ_AUTH" | gcloud secrets create KIZUNA_CALLBACK_AUTH_VALUE --replication-policy=automatic --data-file=-
+# Cuando KIZUNA entregue su client_secret de Entra ID (INTEGRACION_KIZUNA_OAUTH2.spec.md, PENDIENTE-26):
+read -rs KZ_SECRET
+printf '%s' "$KZ_SECRET" | gcloud secrets create KIZUNA_OAUTH_CLIENT_SECRET --replication-policy=automatic --data-file=-
 
-unset CLAVE_APP TWILIO_AUTH_TOKEN KZ_AUTH
+unset CLAVE_APP TWILIO_AUTH_TOKEN KZ_SECRET
 ```
 
 Para cambiar un secreto, se agrega una versión con `printf '%s' "<nuevo>" | gcloud secrets versions add <NOMBRE>
@@ -386,9 +395,10 @@ gcloud run deploy consent-api \
   reintentos corren después de responder (M5), y sin CPU asignada se congelarían.
 - `--allow-unauthenticated`: el servicio es público porque lo llaman KIZUNA y Twilio. Los endpoints de KIZUNA se
   protegen con la API Key y el webhook con la firma de Twilio.
-- `--set-secrets` reemplaza todos los secretos del servicio. Cuando exista `KIZUNA_CALLBACK_AUTH_VALUE`, agregar
-  `,KIZUNA_CALLBACK_AUTH_VALUE=KIZUNA_CALLBACK_AUTH_VALUE:latest`. Para fijar una versión concreta, usar `:<número>`
-  en vez de `:latest`.
+- `--set-secrets` reemplaza todos los secretos del servicio. Cuando exista `KIZUNA_OAUTH_CLIENT_SECRET`, agregar
+  `,KIZUNA_OAUTH_CLIENT_SECRET=KIZUNA_OAUTH_CLIENT_SECRET:latest` (en Producción el callback usa
+  `KIZUNA_CALLBACK_AUTH_MODE=oauth2`; `KIZUNA_CALLBACK_AUTH_VALUE` solo se usa en el modo `header`). Para fijar una
+  versión concreta, usar `:<número>` en vez de `:latest`.
 - Si falta un dato obligatorio la app no arranca y el deploy falla, y la revisión anterior sigue activa. Puede faltar
   la `API_KEY`, la configuración de Twilio con `TWILIO_SEND_ENABLED=true` o la de KIZUNA con
   `KIZUNA_CALLBACK_ENABLED=true`. El motivo aparece en los logs con severidad `CRITICAL`.
@@ -457,9 +467,10 @@ migraciones (`alembic downgrade b7c2d9e41f60`) borra las 11 tablas y sus datos: 
 
 - `TWILIO_SEND_ENABLED=true`: cuando la plantilla esté aprobada por Meta y se conozca `TWILIO_CONTENT_SID`
   (PENDIENTE-07 y PENDIENTE-15).
-- `KIZUNA_CALLBACK_ENABLED=false` hasta tener la URL y la autenticación del endpoint real de KIZUNA (PENDIENTE-13;
-  el payload ya es el definido por KIZUNA y cualquier `2xx` se toma como éxito). Al encenderlo,
-  el reproceso del arranque envía las notificaciones acumuladas.
+- `KIZUNA_CALLBACK_ENABLED=false` hasta tener la URL del endpoint real de KIZUNA (PENDIENTE-27) y sus datos de
+  OAuth 2.0 (token URL, `client_id`, `client_secret` y scope de su Entra ID, PENDIENTE-26; ver
+  `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`). El payload ya es el definido por KIZUNA y cualquier `2xx` se
+  toma como éxito. Al encenderlo, el reproceso del arranque envía las notificaciones acumuladas.
 - `DOCS_ENABLED` (PENDIENTE-12), `PRIVACY_POLICY_URL` (PENDIENTE-14) y el dominio de la landing en
   `CORS_ALLOWED_ORIGINS` / `LANDING_BASE_URL` (PENDIENTE-15).
 - BackOffice: región para el rewrite de Firebase (PENDIENTE-09), dominio propio en `BACKOFFICE_BASE_URL`

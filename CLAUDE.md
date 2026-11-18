@@ -7,12 +7,14 @@ commands. Read it first. This file only adds what is specific to this repo and t
 
 ## Sources of truth
 
-- `REQUERIMIENTOS_TECNICOS.md` (v1.5; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
+- `REQUERIMIENTOS_TECNICOS.md` (v1.6; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
 - `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.6): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
+- `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.1): OAuth 2.0 with KIZUNA (Apigee inbound, Entra ID
+  outbound). For KIZUNA authentication it wins. Progress: `../REPORTE_CRITERIOS_KIZUNA_OAUTH2.md`.
 - Deploy: `README.md` "Despliegue manual en Google Cloud" (step 7 = BackOffice), `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`
   section 19 and `../GUIA_DESPLIEGUE_VPS_PRUEBAS.md` section 13. Since 17/11/2026 the test VPS runs `4214ea3` with head
   `b6b72cd353a6` and `REVOKE UPDATE, DELETE ON audit_logs FROM consent_app` applied.
@@ -180,6 +182,36 @@ commands. Read it first. This file only adds what is specific to this repo and t
     so the real app is never modified.
   - `test_bo_cli.py::test_purge_requires_the_owner` creates a temporary role (`bo_purge_test_*`) with
     `consent_app`-like grants and drops it at the end; it skips if the DB user cannot create roles.
+
+## KIZUNA OAuth 2.0 code map (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, phase K1)
+
+- `app/integrations/kizuna_oauth.py`:
+  - `KizunaTokenProvider` gets the client-credentials token from KIZUNA's Entra ID (`client_secret_post` or `_basic`,
+    RFC 6749 §2.3.1 encoding) and caches it in memory until `expires_in − KIZUNA_OAUTH_REFRESH_MARGIN_SECONDS`.
+    Its `asyncio.Lock` means a single request at a time. The cache key is URL + client_id + scope + method; without a
+    valid `expires_in` the token is used once.
+  - `get_kizuna_token_provider()` is the per-process `lru_cache` singleton. `tests/conftest.py::fresh_kizuna_token_provider`
+    clears it around every test, because its lock binds to an event loop.
+  - `KizunaTokenSource` binds the provider to the settings of the current send. `KizunaTokenError(retryable,
+    http_status)`: network, timeout, 5xx and 429 are retryable; anything else is `FALLIDO`.
+  - `last_error` keeps only `error` and `error_description`, prefixed with `Token:`, with the secret redacted.
+- `app/integrations/kizuna_client.py`:
+  - `KizunaClient.from_settings(..., token_provider=)` picks the mode with `KIZUNA_CALLBACK_AUTH_MODE`: `header` is
+    the default and M5 behavior; `oauth2` sends a Bearer.
+  - A callback `401` invalidates that token and resends once inside the same attempt (`attempts` +1 only).
+  - `KizunaSendResult.error_from_token` marks failures of the token request.
+  - `check_kizuna_settings` adds the oauth2 checks: the four values are required, the header must be empty, and with
+    `APP_ENV=production` both URLs must be `https`.
+- `KizunaNotifier(..., token_provider=None)` falls back to the process singleton, so the token is shared between
+  batches and with the startup reprocess.
+- Mock (`mocks/kizuna_mock/main.py`):
+  - `POST /kizuna/oauth/token` imitates Entra ID. `MOCK_REQUIRE_AUTH`, `MOCK_CLIENT_ID`/`_SECRET`,
+    `MOCK_TOKEN_EXPIRES_IN` and `MOCK_TOKEN_FAIL_TIMES` control it.
+  - `DELETE /kizuna/oauth/tokens` revokes the issued tokens. `GET /kizuna/received` adds `token_requests` and a
+    per-item `authenticated`.
+  - Rebuild the container after changing it: `docker compose up -d --build kizuna-mock`.
+- Tests: `tests/test_kizuna_oauth.py` (mock as ASGI transport, plus `routed_transport` for odd token responses),
+  `tests/test_kizuna_mock.py` (OAuth section) and `tests/test_e2e_local.py::test_accepted_with_oauth2`.
 
 ## Postman and the frontend OpenAPI snapshot
 

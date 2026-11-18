@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.models import ConsentLink, KizunaNotification, NotificationStatus, WhatsappMessage
@@ -308,3 +309,33 @@ async def test_rn05_new_purchase_after_rejection(flow: LocalFlow, e2e_settings: 
         ("TRX-RN05-2", "ACEPTADO", 0),
         ("TRX-RN05-1", "NO_ACEPTADO", 1),
     ]
+
+
+# --- OAuth 2.0 del callback (INTEGRACION_KIZUNA_OAUTH2.spec.md, K1.11) ---
+
+
+async def test_accepted_with_oauth2(flow: LocalFlow, e2e_settings: Settings) -> None:
+    """El callback viaja con un Bearer que la API obtuvo del token endpoint del mock (imita a Entra ID).
+
+    Credenciales del contenedor: MOCK_CLIENT_ID / MOCK_CLIENT_SECRET (por defecto mock-client / mock-secret); si se
+    cambiaron, exportar las mismas en el entorno del test.
+    """
+    e2e_settings.kizuna_callback_auth_mode = "oauth2"
+    e2e_settings.kizuna_oauth_token_url = f"{MOCK_URL}/kizuna/oauth/token"
+    e2e_settings.kizuna_oauth_client_id = os.getenv("MOCK_CLIENT_ID", "mock-client")
+    e2e_settings.kizuna_oauth_client_secret = SecretStr(os.getenv("MOCK_CLIENT_SECRET", "mock-secret"))
+    e2e_settings.kizuna_oauth_scope = "api://kizuna-mock/.default"
+
+    _, token = await flow.kizuna_sends("TRX-OAUTH-1")
+    assert token is not None
+    assert (await flow.customer_submits(token, ACCEPT)).json() == {"status": "ACEPTADO"}
+
+    listing = (await flow.mock.get("/kizuna/received")).json()
+    if "token_requests" not in listing:
+        pytest.fail("El contenedor del mock es anterior a K1: docker compose up -d --build kizuna-mock")
+    assert listing["token_requests"] == 1
+    assert [(item["payload"]["IdentifierId"], item["authenticated"]) for item in listing["received"]] == [
+        ("TRX-OAUTH-1", True)
+    ]
+    notification = (await flow.notifications())["TRX-OAUTH-1"]
+    assert (notification.status, notification.attempts) == (NotificationStatus.ENVIADO, 1)

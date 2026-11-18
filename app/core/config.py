@@ -59,11 +59,26 @@ class Settings(BaseSettings):
     phone_country_prefix: str = "51"
 
     # --- Notificación a KIZUNA ---
-    # TODO(PENDIENTE-13): URL, autenticación y respuesta esperada del callback real (el payload ya está definido).
+    # TODO(PENDIENTE-27): URL y respuesta esperada del callback real (el payload ya está definido; la autenticación es
+    # OAuth 2.0, INTEGRACION_KIZUNA_OAUTH2.spec.md).
     kizuna_callback_enabled: bool = False
     kizuna_callback_url: str = "http://kizuna-mock:8081/kizuna/consent-result"
+    # header: KIZUNA_CALLBACK_AUTH_HEADER/_VALUE (header vacío = sin autenticación; comportamiento de M5).
+    # oauth2: client credentials contra el servidor de autorización de KIZUNA (Entra ID), sección 4 del spec OAuth2.
+    kizuna_callback_auth_mode: Literal["header", "oauth2"] = "header"
     kizuna_callback_auth_header: str = ""
     kizuna_callback_auth_value: SecretStr = SecretStr("")
+    # TODO(PENDIENTE-26): token URL, client_id, client_secret y scope que entregue KIZUNA.
+    kizuna_oauth_token_url: str = ""
+    kizuna_oauth_client_id: str = ""
+    kizuna_oauth_client_secret: SecretStr = SecretStr("")
+    # Un solo valor. En Entra ID con client credentials: <recurso>/.default.
+    kizuna_oauth_scope: str = ""
+    kizuna_oauth_client_auth_method: Literal["client_secret_post", "client_secret_basic"] = (
+        "client_secret_post"
+    )
+    # El token se renueva este tiempo antes de su vencimiento (no cambia su vida, 3600 s).
+    kizuna_oauth_refresh_margin_seconds: int = Field(default=300, ge=0, le=1800)
     kizuna_callback_max_retries: int = Field(default=3, ge=0)
     kizuna_callback_backoff_seconds: Annotated[list[float], NoDecode] = [5, 30, 120]
     kizuna_callback_timeout_seconds: float = Field(default=10, gt=0)
@@ -106,10 +121,17 @@ class Settings(BaseSettings):
     def _upper_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("smtp_security", mode="before")
+    @field_validator(
+        "smtp_security", "kizuna_callback_auth_mode", "kizuna_oauth_client_auth_method", mode="before"
+    )
     @classmethod
-    def _lower_smtp_security(cls, value: object) -> object:
+    def _lower_choice(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("kizuna_oauth_token_url", "kizuna_oauth_client_id", "kizuna_oauth_scope")
+    @classmethod
+    def _strip_oauth_value(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("cors_allowed_origins", "kizuna_callback_backoff_seconds", mode="before")
     @classmethod

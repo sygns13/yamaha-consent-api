@@ -4,7 +4,7 @@
 |---|---|
 | Cliente | Yamaha – Perú |
 | Proveedor / Responsable técnico | Cristian Fernando Chávez Torres |
-| Versión del documento | 1.5 — 17/11/2026 (1.4 + política de privacidad en un pop-up de la landing, M6; incorpora las decisiones de la sección 11) |
+| Versión del documento | 1.6 — 18/11/2026 (1.5 + autenticación OAuth 2.0 con KIZUNA en ambos sentidos, especificada en `INTEGRACION_KIZUNA_OAUTH2.spec.md`; incorpora las decisiones de la sección 11) |
 | Nube | Google Cloud (proyecto provisto por Yamaha). **Base de datos, backend y landing se despliegan en Google Cloud** |
 | Stack | Python + FastAPI · PostgreSQL (Cloud SQL) · Astro · Twilio WhatsApp |
 | Ambiente | Solo Producción (desarrollo y pruebas en local) |
@@ -47,6 +47,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 - Reintentos o reenvíos del WhatsApp cuando el cliente no abre el enlace.
 - Paneles de administración, reportes o formularios adicionales.
   > **Nota (15/11/2026):** Los paneles de administración del BackOffice se especifican en `BACKOFFICE_DEALERS.spec.md`.
+  > **Nota (18/11/2026):** La autenticación OAuth 2.0 entre KIZUNA y la API (Apigee en la entrada, Entra ID de KIZUNA en la salida) se especifica en `INTEGRACION_KIZUNA_OAUTH2.spec.md`.
 - **CI/CD automatizado** (solo despliegue manual).
 - Ambientes de QA o Desarrollo en la nube.
 
@@ -324,6 +325,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
   - Sin clave → `401 {"detail": "Falta la API Key"}`. Con clave inválida → `401 {"detail": "API Key inválida"}`.
   - Los rechazos se registran en el log con el motivo y la ruta, **nunca** con la clave recibida ni la IP.
   - La API Key se documenta en OpenAPI (esquema `ApiKey`, botón *Authorize* de Swagger).
+  - **Producción (v1.6):** KIZUNA ya no usa la API Key. Se autentica con OAuth 2.0 contra Apigee, y Apigee llama a la API con esta API Key (`INTEGRACION_KIZUNA_OAUTH2.spec.md`). Este apartado sigue vigente para la API.
 - Los endpoints públicos (`/api/v1/public/*`) **no** usan API Key: los protege el token del enlace.
 - CORS: solo los orígenes de `CORS_ALLOWED_ORIGINS` (dominio de la landing). Se permiten únicamente `GET` y `POST` con el header `Content-Type`, sin credenciales (cookies), y se expone `X-Request-ID`. El header de la API Key **no** se permite desde el navegador: KIZUNA llama de servidor a servidor y no necesita CORS.
 
@@ -610,7 +612,8 @@ KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final co
 - `consentDateTime` = `responded_at` con la hora de Lima (`KIZUNA_TIMEZONE`, `-05:00`), sin fracciones de segundo.
 - Los checks **nunca van en `null`**: un check no marcado o en `null` va en `false`, y en `NO_ACEPTADO` (RN-01) el marketing va en `false`.
 - No lleva estado: el rechazo se reconoce por `personalDataConsent = false`.
-- Falta: URL, método de autenticación y respuesta esperada. **Mientras tanto**: autenticación saliente parametrizada con `KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUNA_CALLBACK_AUTH_VALUE`, y cualquier `2xx` es éxito (se espera `200`).
+- Autenticación (v1.6): OAuth 2.0 client credentials contra el Entra ID de KIZUNA (modo `KIZUNA_CALLBACK_AUTH_MODE=oauth2`, ver `INTEGRACION_KIZUNA_OAUTH2.spec.md`). Se conserva el header configurable (`KIZUNA_CALLBACK_AUTH_HEADER` y `KIZUNA_CALLBACK_AUTH_VALUE`, modo `header`).
+- Falta: URL y respuesta esperada (PENDIENTE-27 de `INTEGRACION_KIZUNA_OAUTH2.spec.md`). **Mientras tanto**: cualquier `2xx` es éxito (se espera `200`).
 
 ### Mock de KIZUNA (`mocks/kizuna_mock/`)
 
@@ -788,6 +791,8 @@ KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final co
 | `KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES` | `10` | Al arrancar se reenvían las notificaciones `PENDIENTE` sin reclamar y las que llevan más de N minutos sin intento (reclamo vencido) |
 | `KIZUNA_TIMEZONE` | `America/Lima` | Zona horaria de las fechas hacia KIZUNA (`consentDateTime`, fechas de las consultas) y de `requestDateTime` sin offset |
 
+Las variables de autenticación OAuth 2.0 del callback (`KIZUNA_CALLBACK_AUTH_MODE`, `KIZUNA_OAUTH_*`) están en la sección 5 de `INTEGRACION_KIZUNA_OAUTH2.spec.md`.
+
 ### Frontend (build)
 
 | Variable | Descripción |
@@ -810,7 +815,7 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | PENDIENTE-10 | Teléfonos extranjeros | Con la regla de 9 dígitos sin prefijo, solo se soportan móviles de Perú. ¿Es correcto? | Se rechaza (422) lo que no tenga 9 dígitos |
 | PENDIENTE-11 | Nombre visible del remitente | Nombre que verá el cliente en WhatsApp (el mockup muestra "YAMAHA***") | — |
 | PENDIENTE-12 | Swagger en Producción | ¿Se deja `/docs` expuesto? | Controlado por `DOCS_ENABLED` |
-| PENDIENTE-13 | Callback a KIZUNA | URL, autenticación y respuesta esperada (el payload ya lo definió KIZUNA, M5) | Envío al **mock**; éxito = `2xx`; `KIZUNA_CALLBACK_ENABLED=false` |
+| PENDIENTE-13 | Callback a KIZUNA | URL y respuesta esperada (el payload ya lo definió KIZUNA, M5). La autenticación quedó definida el 18/11/2026 (OAuth 2.0, `INTEGRACION_KIZUNA_OAUTH2.spec.md`); lo abierto sigue allí como PENDIENTE-27 | Envío al **mock**; éxito = `2xx`; `KIZUNA_CALLBACK_ENABLED=false` |
 | PENDIENTE-14 | Política de privacidad | URL y versión vigentes | Variables de entorno del backend; la landing muestra la copia del 17/11/2026 de la página oficial (M6, v1.5) |
 | PENDIENTE-15 | Dominio de la landing | Dominio o subdominio final (probablemente provisto desde Hostinger). **Se requiere antes de crear la plantilla de WhatsApp**, porque el botón usa un dominio fijo | `LANDING_BASE_URL` y `CORS_ALLOWED_ORIGINS` configurables |
 | PENDIENTE-16 | Expiración sin respuesta | Si el enlace vence sin respuesta, ¿se notifica algo a KIZUNA? | No se notifica; el estado queda `PENDIENTE` |
@@ -902,3 +907,4 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 05/11/2026 | Estilo de la API | Todos los endpoints (KIZUNA y públicos) usan los nombres de KIZUNA en camelCase en requests, query, rutas y respuestas (`IdentifierId`, `customerId`, `dealerCode`, `affectedIdentifierId`, `isDeleted`, `linkStatus`, `privacyPolicyUrl`, `dealerName`, `errorCode`...). Las fechas de las respuestas van con el offset de `KIZUNA_TIMEZONE` (nueva variable). El webhook de Twilio no cambia (formato de Twilio). |
 | 15/11/2026 | Ampliación · BackOffice | Los paneles de administración del BackOffice (login, usuarios, roles, Gestión de Dealers, bitácora) se especifican en `requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.1), que amplía este documento sin modificar sus contratos (KIZUNA, landing, webhook de Twilio). Para el BackOffice manda ese documento; para todo lo demás, este. |
 | 17/11/2026 | M6 · Política de privacidad en un pop-up (v1.5) | Cada "política de privacidad" abre un pop-up en la misma página con el texto copiado tal cual de la página oficial de Yamaha (17/11/2026; no se puede incrustar por `X-Frame-Options: SAMEORIGIN`). Aceptar marca el check de ese enlace; Cancelar y Escape lo desmarcan. Reemplaza la decisión del 27/10/2026 (pestaña nueva). La landing deja de usar `PUBLIC_PRIVACY_POLICY_URL` y el `privacyPolicyUrl` del `GET` (que la API sigue devolviendo); la evidencia sigue guardando `PRIVACY_POLICY_URL`. |
+| 18/11/2026 | Autenticación con KIZUNA (v1.6) | OAuth 2.0 client credentials en ambos sentidos, especificado en `requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.1). Entrada: Apigee emite y valida los tokens de KIZUNA y llama a la API con la API Key de §2.1. Salida: la API obtiene el token del Entra ID de KIZUNA. No cambia el contrato de datos v1.4. Para la autenticación entre KIZUNA y la API manda ese documento; para todo lo demás, este. |

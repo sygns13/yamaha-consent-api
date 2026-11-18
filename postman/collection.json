@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f1c2a7e-3b9d-4c55-9a0e-2d8f5b7c1e40",
     "name": "Yamaha Consent API",
-    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n- `backoffice_base_url` y las variables `bo_*`, `user_*`, `dealer_*` y `reset_token`: carpeta `BackOffice` (ver su descripción).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
+    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `kizuna_mock_token`: Bearer del mock; lo completa `Mock KIZUNA / Pedir token (OAuth2)`.\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n- `backoffice_base_url` y las variables `bo_*`, `user_*`, `dealer_*` y `reset_token`: carpeta `BackOffice` (ver su descripción).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -21,6 +21,7 @@
     { "key": "customer_id", "value": "12345678", "type": "string" },
     { "key": "dealer_code", "value": "DEALER-001", "type": "string" },
     { "key": "kizuna_mock_url", "value": "http://localhost:8081", "type": "string" },
+    { "key": "kizuna_mock_token", "value": "", "type": "string" },
     { "key": "twilio_auth_token", "value": "", "type": "string" },
     { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" },
     { "key": "backoffice_base_url", "value": "http://localhost:8000", "type": "string" },
@@ -292,7 +293,7 @@
     },
     {
       "name": "Mock KIZUNA (solo local)",
-      "description": "Mock de KIZUNA de docker compose. No se despliega en Producción. `MOCK_FAIL_TIMES=N` responde 500 las primeras N veces; `MOCK_RESPONSE_DELAY_SECONDS` simula un timeout.",
+      "description": "Mock de KIZUNA de docker compose. No se despliega en Producción. `MOCK_FAIL_TIMES=N` responde 500 las primeras N veces; `MOCK_RESPONSE_DELAY_SECONDS` simula un timeout.\n\n**OAuth 2.0** (INTEGRACION_KIZUNA_OAUTH2.spec.md, sección 6): `Pedir token (OAuth2)` imita al Entra ID de KIZUNA (client credentials, `mock-client` / `mock-secret`). Con `MOCK_REQUIRE_AUTH=true` el callback exige ese Bearer. Para que la API lo use: `KIZUNA_CALLBACK_AUTH_MODE=oauth2` y las variables `KIZUNA_OAUTH_*` del `.env.example`.",
       "auth": { "type": "noauth" },
       "item": [
         {
@@ -304,7 +305,7 @@
               "host": ["{{kizuna_mock_url}}"],
               "path": ["kizuna", "received"]
             },
-            "description": "`{\"total_requests\", \"received\": [{\"received_at\", \"payload\"}]}`. `total_requests` incluye los fallos simulados."
+            "description": "`{\"total_requests\", \"token_requests\", \"received\": [{\"received_at\", \"authenticated\", \"payload\"}]}`. `total_requests` incluye los fallos simulados; `authenticated` indica si el callback llegó con un Bearer vigente del mock."
           }
         },
         {
@@ -316,14 +317,64 @@
               "host": ["{{kizuna_mock_url}}"],
               "path": ["kizuna", "received"]
             },
-            "description": "Vacía la lista y reinicia el contador (`204`)."
+            "description": "Vacía la lista y reinicia los contadores (`204`). Los tokens emitidos siguen vigentes."
+          }
+        },
+        {
+          "name": "Pedir token (OAuth2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('kizuna_mock_token', pm.response.json().access_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "mock-client" },
+                { "key": "client_secret", "value": "mock-secret" },
+                { "key": "scope", "value": "api://kizuna-mock/.default" }
+              ]
+            },
+            "url": {
+              "raw": "{{kizuna_mock_url}}/kizuna/oauth/token",
+              "host": ["{{kizuna_mock_url}}"],
+              "path": ["kizuna", "oauth", "token"]
+            },
+            "description": "Client credentials como el Entra ID de KIZUNA (`client_secret_post`; también acepta Basic). `200 {\"token_type\": \"Bearer\", \"expires_in\": 3600, \"ext_expires_in\": 3600, \"access_token\"}`; credenciales inválidas → `401 invalid_client`. Guarda el token en `kizuna_mock_token`."
+          }
+        },
+        {
+          "name": "Revocar tokens",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{kizuna_mock_url}}/kizuna/oauth/tokens",
+              "host": ["{{kizuna_mock_url}}"],
+              "path": ["kizuna", "oauth", "tokens"]
+            },
+            "description": "Invalida los tokens emitidos (`204`): el siguiente callback con uno de ellos recibe `401` si `MOCK_REQUIRE_AUTH=true` (la API renueva el token y reenvía una vez)."
           }
         },
         {
           "name": "Enviar resultado (como el backend)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{kizuna_mock_token}}" }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"IdentifierId\": \"{{transaction_id}}\",\n  \"customerId\": \"{{customer_id}}\",\n  \"dealerCode\": \"{{dealer_code}}\",\n  \"consentDateTime\": \"2026-11-02T13:35:00-05:00\",\n  \"personalDataConsent\": true,\n  \"marketingConsentYMDP\": false,\n  \"marketingConsentDEALER\": false\n}",
@@ -334,7 +385,7 @@
               "host": ["{{kizuna_mock_url}}"],
               "path": ["kizuna", "consent-result"]
             },
-            "description": "Payload propuesto en M5 (PENDIENTE-13). `200 {\"received\": true}`; estructura inválida → `422`."
+            "description": "Payload del contrato de KIZUNA (M5). Lleva el Bearer de `Pedir token (OAuth2)`, como la API en modo `oauth2`. `200 {\"received\": true}`; estructura inválida → `422`; sin Bearer vigente y con `MOCK_REQUIRE_AUTH=true` → `401`."
           }
         }
       ]

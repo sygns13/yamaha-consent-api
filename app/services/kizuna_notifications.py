@@ -6,6 +6,8 @@
   commit (BackgroundTasks): si KIZUNA no responde, la respuesta del cliente ya quedó registrada.
 - 1 intento + KIZUNA_CALLBACK_MAX_RETRIES reintentos, con KIZUNA_CALLBACK_BACKOFF_SECONDS de espera antes de cada
   reintento. Se reintenta ante error de red, timeout, 5xx y 429; cualquier otra respuesta que no sea 2xx → FALLIDO.
+  Con KIZUNA_CALLBACK_AUTH_MODE=oauth2 lo mismo vale para el pedido de token (un 4xx del token → FALLIDO); un 401
+  del callback renueva el token y reenvía una vez dentro del mismo intento (app/integrations/kizuna_client.py).
 - Con KIZUNA_CALLBACK_ENABLED=false no sale ninguna petición: la notificación queda PENDIENTE (sin reclamar).
 - Reclamo (claimed_at, SELECT ... FOR UPDATE SKIP LOCKED): una sola instancia envía cada notificación. El reclamo se
   renueva en cada intento; si pasan KIZUNA_CALLBACK_REPROCESS_AFTER_MINUTES sin renovarse, vence.
@@ -32,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings, get_settings
 from app.db.session import get_session_factory
 from app.integrations.kizuna_client import KizunaClient, build_kizuna_payload
+from app.integrations.kizuna_oauth import KizunaTokenProvider
 from app.models import Consent, KizunaNotification, NotificationStatus
 
 logger = logging.getLogger(__name__)
@@ -81,12 +84,15 @@ class KizunaNotifier:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Sleep = asyncio.sleep,
+        token_provider: KizunaTokenProvider | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         # Los tests pasan el mock de KIZUNA como transporte ASGI (sin red).
         self._transport = transport
         self._sleep = sleep
+        # Modo oauth2: None = el proveedor único del proceso (el token se comparte entre lotes).
+        self._token_provider = token_provider
 
     async def dispatch(self, notification_ids: Sequence[uuid.UUID]) -> None:
         """Envía las notificaciones recién creadas (BackgroundTask, después del commit)."""
@@ -155,7 +161,9 @@ class KizunaNotifier:
                 await self._deliver_safely(client, notification_id)
 
         async with KizunaClient.build_http_client(self._settings, self._transport) as http_client:
-            client = KizunaClient.from_settings(http_client, self._settings)
+            client = KizunaClient.from_settings(
+                http_client, self._settings, token_provider=self._token_provider
+            )
             # En paralelo: los reintentos de una notificación no retrasan a las demás.
             await asyncio.gather(
                 *(deliver_limited(client, notification_id) for notification_id in notification_ids)

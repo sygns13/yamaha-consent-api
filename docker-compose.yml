@@ -32,6 +32,12 @@ services:
     environment:
       MOCK_FAIL_TIMES: ${MOCK_FAIL_TIMES:-0}
       MOCK_RESPONSE_DELAY_SECONDS: ${MOCK_RESPONSE_DELAY_SECONDS:-0}
+      # OAuth 2.0 (INTEGRACION_KIZUNA_OAUTH2.spec.md, sección 6): token endpoint POST /kizuna/oauth/token.
+      MOCK_REQUIRE_AUTH: ${MOCK_REQUIRE_AUTH:-false}
+      MOCK_CLIENT_ID: ${MOCK_CLIENT_ID:-mock-client}
+      MOCK_CLIENT_SECRET: ${MOCK_CLIENT_SECRET:-mock-secret}
+      MOCK_TOKEN_EXPIRES_IN: ${MOCK_TOKEN_EXPIRES_IN:-3600}
+      MOCK_TOKEN_FAIL_TIMES: ${MOCK_TOKEN_FAIL_TIMES:-0}
     ports:
       - "${KIZUNA_MOCK_PORT:-8081}:8081"
 
