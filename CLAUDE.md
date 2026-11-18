@@ -10,7 +10,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `REQUERIMIENTOS_TECNICOS.md` (v1.4; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
-- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.4): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
+- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.5): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
 
