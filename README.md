@@ -1,8 +1,9 @@
 # yamaha-consent-api
 
 Backend (FastAPI) de la plataforma de conformidades de tratamiento de datos personales (KIZUNA · WhatsApp · Landing).
-La especificación completa está en `REQUERIMIENTOS_TECNICOS.md`. El BackOffice (endpoints `/api/v1/backoffice/*`, en
-construcción por fases) se especifica en `requerimientos/BACKOFFICE_DEALERS.spec.md` del workspace.
+La especificación completa está en `REQUERIMIENTOS_TECNICOS.md`. El BackOffice (endpoints `/api/v1/backoffice/*`,
+fases B0–B9) se especifica en `requerimientos/BACKOFFICE_DEALERS.spec.md` del workspace; su frontend es el repo
+`yamaha-consent-backoffice`.
 
 ## Requisitos locales
 
@@ -421,6 +422,37 @@ gcloud run services update-traffic consent-api --region=$REGION --to-revisions=<
 Las migraciones no se revierten solas. Hacer `alembic downgrade` solo si la versión anterior no funciona con el
 esquema nuevo, y revisando antes qué borra.
 
+### 7. BackOffice (spec del BackOffice, sección 10.3)
+
+Misma imagen y mismo servicio: el BackOffice agrega dos migraciones, un secreto opcional y un sitio de Firebase Hosting
+en el repo `yamaha-consent-backoffice`, que reenvía `/api/v1/backoffice/**` a este servicio (mismo origen). Orden
+completo y verificación: `GUIA_DESPLIEGUE_PRODUCCION_GCP.md`, sección 19, del workspace. Ya probado en el VPS
+(`GUIA_DESPLIEGUE_VPS_PRUEBAS.md`, sección 13).
+
+1. **Imagen** nueva (paso 2). El CSV de Ubigeo viaja en ella (`alembic/data/ubigeo_inei.csv`, SHA-256 en
+   `alembic/data/UBIGEO_FUENTE.md`).
+2. **Migraciones** con `consent_owner` (paso 3): `alembic current` → `b6b72cd353a6`.
+3. **SQL una sola vez** con `consent_owner`: `REVOKE UPDATE, DELETE ON audit_logs FROM consent_app;` y verificar que
+   `consent_app` tiene `SELECT, INSERT, UPDATE, DELETE` en las 11 tablas nuevas (llegan por el `ALTER DEFAULT
+   PRIVILEGES`) y solo `SELECT, INSERT` en `audit_logs`.
+4. **Secreto `SMTP_PASSWORD`** (contraseña de aplicación de Gmail, sin espacios), solo cuando exista:
+   `read -rs SMTP_PW; printf '%s' "$SMTP_PW" | gcloud secrets create SMTP_PASSWORD --replication-policy=automatic --data-file=-; unset SMTP_PW`.
+5. **`deploy/cloudrun.env.yaml`:** `BACKOFFICE_BASE_URL` = URL técnica del sitio (`https://<sitio>.web.app`) mientras
+   no haya dominio propio (PENDIENTE-18; el valor real no se commitea); `EMAIL_SEND_ENABLED: "true"` solo si existe el
+   secreto. No agregar el dominio del BackOffice a `CORS_ALLOWED_ORIGINS`. `uv run pytest tests/test_deploy_config.py`.
+6. **Deploy** (paso 4), con `,SMTP_PASSWORD=SMTP_PASSWORD:latest` en `--set-secrets` cuando el secreto exista.
+7. **Primer Administrador** por el proxy (datos de prueba de la sección 5.11.1 del spec):
+   `DATABASE_URL="postgresql+asyncpg://consent_app:<CLAVE_APP>@127.0.0.1:5434/consents_db" uv run python -m app.cli.backoffice create-admin --dni 00000000 --first-names "Administrador" --last-names "General" --username admin --email construyendosolucionesbcs@gmail.com`.
+8. **Frontend:** `firebase deploy --only hosting:backoffice` desde `yamaha-consent-backoffice` (ver su README).
+9. **Verificar:** `/api/v1/backoffice/auth/me` sin cookie → `401` con `Cache-Control: no-store` en la URL del sitio;
+   `SMTP_PASSWORD` solo como `secretKeyRef` en `gcloud run services describe`.
+10. **Depuración mensual** (sección 5.13), por el proxy y con el usuario dueño:
+    `DATABASE_URL="postgresql+asyncpg://consent_owner:<CLAVE_OWNER>@127.0.0.1:5434/consents_db" uv run python -m app.cli.backoffice purge --dry-run`
+    y luego sin `--dry-run`.
+
+Rollback del BackOffice: tráfico a la revisión anterior (paso 6) y `firebase hosting:rollback` del sitio. Revertir las
+migraciones (`alembic downgrade b7c2d9e41f60`) borra las 11 tablas y sus datos: solo si es imprescindible.
+
 ### Pendientes antes de habilitar todo en Producción
 
 - `TWILIO_SEND_ENABLED=true`: cuando la plantilla esté aprobada por Meta y se conozca `TWILIO_CONTENT_SID`
@@ -430,3 +462,5 @@ esquema nuevo, y revisando antes qué borra.
   el reproceso del arranque envía las notificaciones acumuladas.
 - `DOCS_ENABLED` (PENDIENTE-12), `PRIVACY_POLICY_URL` (PENDIENTE-14) y el dominio de la landing en
   `CORS_ALLOWED_ORIGINS` / `LANDING_BASE_URL` (PENDIENTE-15).
+- BackOffice: región para el rewrite de Firebase (PENDIENTE-09), dominio propio en `BACKOFFICE_BASE_URL`
+  (PENDIENTE-18) y `EMAIL_SEND_ENABLED=true` cuando exista el secreto `SMTP_PASSWORD`.

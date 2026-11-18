@@ -10,9 +10,12 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `REQUERIMIENTOS_TECNICOS.md` (v1.4; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
-- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.5): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
+- `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.6): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
+- Deploy: `README.md` "Despliegue manual en Google Cloud" (step 7 = BackOffice), `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`
+  section 19 and `../GUIA_DESPLIEGUE_VPS_PRUEBAS.md` section 13. Since 17/11/2026 the test VPS runs `4214ea3` with head
+  `b6b72cd353a6` and `REVOKE UPDATE, DELETE ON audit_logs FROM consent_app` applied.
 
 ## BackOffice rules (spec section 0.2)
 
