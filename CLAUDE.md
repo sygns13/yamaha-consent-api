@@ -7,7 +7,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
 
 ## Sources of truth
 
-- `REQUERIMIENTOS_TECNICOS.md` (v1.4; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
+- `REQUERIMIENTOS_TECNICOS.md` (v1.5; copy of `../requerimientos/REQUERIMIENTOS_TECNICOS.md`): consents, KIZUNA,
   landing API, Twilio. The three copies (workspace, this repo, landing) must stay identical: edit the workspace one,
   `cp` it here and to the landing, then `cmp`.
 - `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.6): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).

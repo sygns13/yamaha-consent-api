@@ -4,7 +4,7 @@
 |---|---|
 | Cliente | Yamaha – Perú |
 | Proveedor / Responsable técnico | Cristian Fernando Chávez Torres |
-| Versión del documento | 1.4 — 05/11/2026 (contrato de KIZUNA; incorpora las decisiones de la sección 11) |
+| Versión del documento | 1.5 — 17/11/2026 (1.4 + política de privacidad en un pop-up de la landing, M6; incorpora las decisiones de la sección 11) |
 | Nube | Google Cloud (proyecto provisto por Yamaha). **Base de datos, backend y landing se despliegan en Google Cloud** |
 | Stack | Python + FastAPI · PostgreSQL (Cloud SQL) · Astro · Twilio WhatsApp |
 | Ambiente | Solo Producción (desarrollo y pruebas en local) |
@@ -637,7 +637,7 @@ KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final co
 
 - Astro con `output: 'static'`, TypeScript, sin frameworks de UI. El JavaScript del formulario va en un `<script>` de la página.
 - Diseño **mobile-first** y responsive (también para escritorio), fiel a `./assets/mockup-landing.png`: header con "YAMAHA" y "Privacidad y consentimiento", fondo gris claro y botón azul de ancho completo.
-- Variables de build: `PUBLIC_API_BASE_URL` y `PUBLIC_PRIVACY_POLICY_URL` (⚠️ PENDIENTE-14: URL real de la política de privacidad).
+- Variable de build: `PUBLIC_API_BASE_URL`. Hasta la v1.4 también `PUBLIC_PRIVACY_POLICY_URL`; desde la v1.5 la landing ya no usa la URL de la política (su texto va en un pop-up, ver la página `/`). El backend sigue guardando `PRIVACY_POLICY_URL` en la evidencia (⚠️ PENDIENTE-14).
 - Accesibilidad: `<label>` asociados a los checkboxes, foco visible y contraste AA.
 
 ### Páginas
@@ -655,6 +655,11 @@ KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final co
   - Botón: **ENVIAR**
 - En el check 3, **DEALER** se reemplaza por el `dealerName` que devuelve `GET /public/consent-links/{token}`; si viene `null`, queda "DEALER".
 - Los checkboxes inician **desmarcados**. Marcado = aceptado; desmarcado = rechazado.
+- **Política de privacidad en un pop-up** (v1.5, decisión del responsable del 17/11/2026): en las primeras pruebas, abrir la política en una pestaña nueva confundía al cliente. Cada "[política de privacidad]" de los checks abre, **en la misma página**, un pop-up modal con el texto de la política y dos botones abajo: **Aceptar** y **Cancelar**.
+  - **Aceptar** marca el check del enlace que abrió el pop-up; **Cancelar** lo desmarca. Cerrar con la tecla **Escape** equivale a Cancelar. El clic en el enlace no cambia el check por sí solo, y los otros checks no cambian.
+  - Los checks se pueden seguir marcando y desmarcando directamente, sin abrir el pop-up (RN-01: no hay validación que obligue a leer la política).
+  - **Texto:** copia tal cual de la página oficial `https://www.yamaha-motor.com.pe/politicas-privacidad`, hecha el 17/11/2026, con su numeración y sus enlaces (Anexo 1, Formulario, otras políticas), que abren en una pestaña nueva. Esa página no se puede incrustar en otro sitio (`X-Frame-Options: SAMEORIGIN`), por eso el texto va en la landing. Si Yamaha cambia su política, se actualiza la copia y `PRIVACY_POLICY_VERSION` del backend (⚠️ PENDIENTE-14: Yamaha confirma la URL y la versión vigentes).
+  - Título del pop-up: el de la página oficial, "Políticas de Privacidad". Mientras está abierto, la página de fondo no se desplaza; el texto se desplaza dentro del pop-up y los botones quedan siempre a la vista.
 - **RN-01 prevalece:** se **elimina** del mockup la frase "* Autorización obligatoria para continuar". El botón ENVIAR está **siempre habilitado**. El cliente puede enviar con cualquier combinación de checks, **incluso todos desmarcados**, y así se registra su rechazo. No hay validación que bloquee el envío ni diálogo de confirmación.
 - Al enviar: deshabilitar el botón (evitar doble clic), `POST /submit` y, si la respuesta es exitosa (`ACEPTADO` o `NO_ACEPTADO`), ir a `/gracias`. Ante `410`, ir a `/enlace-invalido`. Ante un error de red, mostrar un mensaje y permitir reintentar.
 
@@ -788,7 +793,8 @@ KIZUNA expone un endpoint REST que recibe por `HTTPS POST` el resultado final co
 | Variable | Descripción |
 |---|---|
 | `PUBLIC_API_BASE_URL` | URL base del backend (Cloud Run) |
-| `PUBLIC_PRIVACY_POLICY_URL` | URL de la política de privacidad |
+
+`PUBLIC_PRIVACY_POLICY_URL` se usó hasta la v1.4; desde la v1.5 la landing muestra la política en un pop-up con su texto (M6).
 
 ---
 
@@ -805,7 +811,7 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | PENDIENTE-11 | Nombre visible del remitente | Nombre que verá el cliente en WhatsApp (el mockup muestra "YAMAHA***") | — |
 | PENDIENTE-12 | Swagger en Producción | ¿Se deja `/docs` expuesto? | Controlado por `DOCS_ENABLED` |
 | PENDIENTE-13 | Callback a KIZUNA | URL, autenticación y respuesta esperada (el payload ya lo definió KIZUNA, M5) | Envío al **mock**; éxito = `2xx`; `KIZUNA_CALLBACK_ENABLED=false` |
-| PENDIENTE-14 | Política de privacidad | URL y versión vigentes | Variables de entorno |
+| PENDIENTE-14 | Política de privacidad | URL y versión vigentes | Variables de entorno del backend; la landing muestra la copia del 17/11/2026 de la página oficial (M6, v1.5) |
 | PENDIENTE-15 | Dominio de la landing | Dominio o subdominio final (probablemente provisto desde Hostinger). **Se requiere antes de crear la plantilla de WhatsApp**, porque el botón usa un dominio fijo | `LANDING_BASE_URL` y `CORS_ALLOWED_ORIGINS` configurables |
 | PENDIENTE-16 | Expiración sin respuesta | Si el enlace vence sin respuesta, ¿se notifica algo a KIZUNA? | No se notifica; el estado queda `PENDIENTE` |
 
@@ -895,3 +901,4 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 05/11/2026 | Checks nulos | Un check en `null` se registra como `false` en `consents` y se envía `false` a KIZUNA. En RN-01 el marketing pasa a `false` (antes `null`). La evidencia guarda lo recibido. |
 | 05/11/2026 | Estilo de la API | Todos los endpoints (KIZUNA y públicos) usan los nombres de KIZUNA en camelCase en requests, query, rutas y respuestas (`IdentifierId`, `customerId`, `dealerCode`, `affectedIdentifierId`, `isDeleted`, `linkStatus`, `privacyPolicyUrl`, `dealerName`, `errorCode`...). Las fechas de las respuestas van con el offset de `KIZUNA_TIMEZONE` (nueva variable). El webhook de Twilio no cambia (formato de Twilio). |
 | 15/11/2026 | Ampliación · BackOffice | Los paneles de administración del BackOffice (login, usuarios, roles, Gestión de Dealers, bitácora) se especifican en `requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.1), que amplía este documento sin modificar sus contratos (KIZUNA, landing, webhook de Twilio). Para el BackOffice manda ese documento; para todo lo demás, este. |
+| 17/11/2026 | M6 · Política de privacidad en un pop-up (v1.5) | Cada "política de privacidad" abre un pop-up en la misma página con el texto copiado tal cual de la página oficial de Yamaha (17/11/2026; no se puede incrustar por `X-Frame-Options: SAMEORIGIN`). Aceptar marca el check de ese enlace; Cancelar y Escape lo desmarcan. Reemplaza la decisión del 27/10/2026 (pestaña nueva). La landing deja de usar `PUBLIC_PRIVACY_POLICY_URL` y el `privacyPolicyUrl` del `GET` (que la API sigue devolviendo); la evidencia sigue guardando `PRIVACY_POLICY_URL`. |
