@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # api_key: X-API-Key según API_KEY_ENABLED. cloud_run_iam: la API no valida credenciales porque Cloud Run ya exigió
     # el ID token de la cuenta de servicio de KIZUNA; solo se admite con API_SURFACE=kizuna.
     kizuna_inbound_auth: Literal["api_key", "cloud_run_iam"] = "api_key"
+    # Solo con cloud_run_iam (obligatorias): la API verifica también el ID token de Google. Audiencias aceptadas (`aud`;
+    # la audiencia propia que se configura en Cloud Run con --add-custom-audiences) y el email de la cuenta de servicio
+    # de KIZUNA (`email` del token).
+    kizuna_id_token_audiences: Annotated[list[str], NoDecode] = []
+    kizuna_id_token_email: str = ""
 
     # --- Seguridad (endpoints de KIZUNA) ---
     api_key_enabled: bool = True
@@ -141,12 +146,16 @@ class Settings(BaseSettings):
     def _lower_choice(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("kizuna_oauth_token_url", "kizuna_oauth_client_id", "kizuna_oauth_scope")
+    @field_validator(
+        "kizuna_oauth_token_url", "kizuna_oauth_client_id", "kizuna_oauth_scope", "kizuna_id_token_email"
+    )
     @classmethod
     def _strip_oauth_value(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("cors_allowed_origins", "kizuna_callback_backoff_seconds", mode="before")
+    @field_validator(
+        "cors_allowed_origins", "kizuna_callback_backoff_seconds", "kizuna_id_token_audiences", mode="before"
+    )
     @classmethod
     def _parse_csv(cls, value: object) -> object:
         return _split_csv(value)

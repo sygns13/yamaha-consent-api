@@ -1,7 +1,8 @@
 """Entrada de KIZUNA con Cloud Run IAM (INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md, fase I1).
 
-API_SURFACE, KIZUNA_INBOUND_AUTH, el chequeo al arrancar, el archivo de variables del servicio privado, Postman y el
-retiro de Apigee. Cloud Run IAM en sí no se puede probar aquí: se valida en Producción (criterios I2).
+API_SURFACE, KIZUNA_INBOUND_AUTH, la verificación del ID token en la dependencia de KIZUNA, el chequeo al arrancar, el
+archivo de variables del servicio privado, Postman y el retiro de Apigee. Cloud Run IAM en sí no se puede probar aquí:
+se valida en Producción (criterios I2). El verificador del token tiene sus propios tests (test_google_id_token.py).
 """
 
 import json
@@ -23,12 +24,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.surface import include_routers, routers_for
 from app.api.v1 import backoffice, health, kizuna, public, webhooks
 from app.core.config import Settings, get_settings
-from app.core.security import ApiKeyDep, InsecureConfigurationError, check_security_settings
+from app.core.google_id_token import GoogleIdTokenVerifier, get_google_id_token_verifier
+from app.core.security import (
+    FORBIDDEN_ID_TOKEN,
+    ID_TOKEN_UNAVAILABLE,
+    INVALID_ID_TOKEN,
+    MISSING_ID_TOKEN,
+    InsecureConfigurationError,
+    KizunaAuthDep,
+    check_security_settings,
+)
 from scripts import kizuna_env
+from tests.google_token_helpers import AUDIENCE, EMAIL, KeyPair, claims, network_error, verifier_with
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_URL = "postgresql+asyncpg://u:p@localhost:5432/db"
 KIZUNA_PATHS = {"/api/v1/consents", "/api/v1/consents/{IdentifierId}"}
+KEY = KeyPair("clave-kizuna")
+# Configuración del servicio privado consent-api-kizuna.
+PRIVATE: dict[str, Any] = {
+    "api_surface": "kizuna",
+    "kizuna_inbound_auth": "cloud_run_iam",
+    "kizuna_id_token_audiences": [AUDIENCE],
+    "kizuna_id_token_email": EMAIL,
+}
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -122,12 +141,43 @@ def test_cloud_run_iam_outside_the_kizuna_surface_does_not_start(
 
 
 def test_cloud_run_iam_on_the_kizuna_surface_starts_without_api_key(caplog: pytest.LogCaptureFixture) -> None:
-    settings = make_settings(api_surface="kizuna", kizuna_inbound_auth="cloud_run_iam", api_key="")
+    settings = make_settings(**PRIVATE, api_key="")
     with caplog.at_level(logging.INFO, logger="app.core.security"):
         check_security_settings(settings)
     (record,) = caplog.records
     assert record.levelname == "INFO"
+    assert "verifica el ID token" in record.getMessage()
     assert "debe ser privado" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problem"),
+    [
+        ({"kizuna_id_token_audiences": []}, "falta KIZUNA_ID_TOKEN_AUDIENCES"),
+        ({"kizuna_id_token_email": " "}, "falta KIZUNA_ID_TOKEN_EMAIL"),
+        ({"kizuna_id_token_email": "kizuna-caller"}, "KIZUNA_ID_TOKEN_EMAIL no es un correo"),
+        ({"kizuna_id_token_audiences": ["consent-api-kizuna.<PROJECT_ID>"]}, "valor de ejemplo"),
+        ({"kizuna_id_token_email": "kizuna-caller@<PROJECT_ID>.iam.gserviceaccount.com"}, "valor de ejemplo"),
+    ],
+)
+def test_cloud_run_iam_requires_the_id_token_settings(
+    caplog: pytest.LogCaptureFixture, overrides: dict[str, Any], problem: str
+) -> None:
+    with (
+        caplog.at_level(logging.INFO, logger="app.core.security"),
+        pytest.raises(InsecureConfigurationError, match=problem),
+    ):
+        check_security_settings(make_settings(**{**PRIVATE, **overrides}))
+    (record,) = caplog.records
+    assert record.levelname == "CRITICAL"
+
+
+def test_id_token_audiences_are_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIZUNA_ID_TOKEN_AUDIENCES", f" {AUDIENCE}, https://otra.example ,")
+    monkeypatch.setenv("KIZUNA_ID_TOKEN_EMAIL", f" {EMAIL} ")
+    settings = Settings(_env_file=None, database_url=DB_URL)
+    assert settings.kizuna_id_token_audiences == [AUDIENCE, "https://otra.example"]
+    assert settings.kizuna_id_token_email == EMAIL
 
 
 def test_public_surface_does_not_need_the_api_key(caplog: pytest.LogCaptureFixture) -> None:
@@ -164,12 +214,25 @@ def test_private_kizuna_service_starts_without_api_key() -> None:
         PRINT_PATHS,
         API_SURFACE="kizuna",
         KIZUNA_INBOUND_AUTH="cloud_run_iam",
+        KIZUNA_ID_TOKEN_AUDIENCES=AUDIENCE,
+        KIZUNA_ID_TOKEN_EMAIL=EMAIL,
         API_KEY_ENABLED="true",
         API_KEY="",
         DOCS_ENABLED="false",
     )
     assert result.returncode == 0, result.stderr
     assert set(json.loads(result.stdout.strip().splitlines()[-1])) == KIZUNA_PATHS | {"/health"}
+
+
+def test_private_kizuna_service_does_not_start_without_the_id_token_settings() -> None:
+    result = _run_python(
+        "import app.main",
+        API_SURFACE="kizuna",
+        KIZUNA_INBOUND_AUTH="cloud_run_iam",
+        KIZUNA_ID_TOKEN_AUDIENCES="",
+    )
+    assert result.returncode != 0
+    assert "InsecureConfigurationError" in result.stderr
 
 
 def test_public_service_starts_without_api_key_and_without_kizuna_routes() -> None:
@@ -189,10 +252,12 @@ def test_main_app_does_not_start_with_cloud_run_iam_and_every_route() -> None:
 # --- KIZUNA_INBOUND_AUTH en la dependencia (criterio I1.4) ---
 
 
-def protected_app(settings: Settings) -> FastAPI:
+def protected_app(settings: Settings, verifier: GoogleIdTokenVerifier | None = None) -> FastAPI:
     app = FastAPI()
     app.dependency_overrides[get_settings] = lambda: settings
-    router = APIRouter(dependencies=[ApiKeyDep])
+    if verifier is not None:
+        app.dependency_overrides[get_google_id_token_verifier] = lambda: verifier
+    router = APIRouter(dependencies=[KizunaAuthDep])
 
     @router.get("/protegido")
     async def protected() -> dict[str, bool]:
@@ -202,36 +267,104 @@ def protected_app(settings: Settings) -> FastAPI:
     return app
 
 
-async def get_status(app: FastAPI, headers: dict[str, str] | None = None) -> int:
+async def call(app: FastAPI, headers: dict[str, str] | None = None) -> httpx.Response:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        return (await client.get("/protegido", headers=headers)).status_code
+        return await client.get("/protegido", headers=headers)
 
 
-async def test_cloud_run_iam_skips_the_api_key_only_on_the_kizuna_surface() -> None:
-    private = make_settings(api_surface="kizuna", kizuna_inbound_auth="cloud_run_iam", api_key="")
-    assert await get_status(protected_app(private)) == 200
-    # Defensa: aunque esa combinación no arranca, la dependencia no se salta la API Key fuera del servicio privado.
-    misconfigured = make_settings(api_surface="all", kizuna_inbound_auth="cloud_run_iam")
-    assert await get_status(protected_app(misconfigured)) == 401
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_private_service_accepts_the_kizuna_id_token_without_api_key() -> None:
+    verifier, _ = verifier_with(KEY)
+    app = protected_app(make_settings(**PRIVATE, api_key=""), verifier)
+    response = await call(app, bearer(KEY.sign(claims())))
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        None,
+        {"Authorization": "Bearer "},
+        {"Authorization": "Basic a2l6dW5hOnNlY3JldG8="},
+        {"X-API-Key": "una-clave"},
+        {"X-Serverless-Authorization": "Bearer x"},
+    ],
+)
+async def test_private_service_without_bearer_is_401(headers: dict[str, str] | None) -> None:
+    verifier, _ = verifier_with(KEY)
+    response = await call(protected_app(make_settings(**PRIVATE), verifier), headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": MISSING_ID_TOKEN}
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize(
+    ("token", "status_code", "detail"),
+    [
+        (KEY.sign(claims(aud="https://otra-audiencia.example")), 401, INVALID_ID_TOKEN),
+        (KEY.sign(claims(exp=1_700_000_000, iat=1_699_996_400)), 401, INVALID_ID_TOKEN),
+        (KeyPair("clave-kizuna").sign(claims()), 401, INVALID_ID_TOKEN),
+        (KEY.sign(claims(email="owner@empresa.com")), 403, FORBIDDEN_ID_TOKEN),
+    ],
+)
+async def test_private_service_rejects_invalid_tokens(token: str, status_code: int, detail: str) -> None:
+    verifier, _ = verifier_with(KEY)
+    response = await call(protected_app(make_settings(**PRIVATE), verifier), bearer(token))
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    assert ("www-authenticate" in response.headers) == (status_code == 401)
+
+
+async def test_private_service_is_503_when_google_keys_are_unavailable() -> None:
+    verifier, fetcher = verifier_with(KEY)
+    fetcher.error = network_error()
+    response = await call(protected_app(make_settings(**PRIVATE), verifier), bearer(KEY.sign(claims())))
+    assert response.status_code == 503
+    assert response.json() == {"detail": ID_TOKEN_UNAVAILABLE}
+
+
+async def test_rejection_logs_only_the_reason(caplog: pytest.LogCaptureFixture) -> None:
+    verifier, _ = verifier_with(KEY)
+    token = KEY.sign(claims(email="owner@empresa.com"))
+    with caplog.at_level(logging.WARNING, logger="app.core.security"):
+        await call(protected_app(make_settings(**PRIVATE), verifier), bearer(token))
+    messages = " ".join(
+        record.getMessage() for record in caplog.records if record.name == "app.core.security"
+    )
+    assert "ID token de KIZUNA rechazado" in messages
+    assert token not in messages
+    assert "owner@empresa.com" not in messages
+
+
+async def test_cloud_run_iam_outside_the_kizuna_surface_keeps_asking_for_the_api_key() -> None:
+    # Esa combinación no arranca (check_security_settings), pero la dependencia tampoco se salta la API Key.
+    verifier, _ = verifier_with(KEY)
+    misconfigured = make_settings(**{**PRIVATE, "api_surface": "all"})
+    response = await call(protected_app(misconfigured, verifier), bearer(KEY.sign(claims())))
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Falta la API Key"}
 
 
 async def test_api_key_mode_is_unchanged() -> None:
     settings = make_settings(api_surface="kizuna", kizuna_inbound_auth="api_key")
-    assert await get_status(protected_app(settings)) == 401
-    assert await get_status(protected_app(settings), {"X-API-Key": "una-clave"}) == 200
+    assert (await call(protected_app(settings))).status_code == 401
+    assert (await call(protected_app(settings), {"X-API-Key": "una-clave"})).status_code == 200
 
 
 @pytest.fixture
 async def private_kizuna_client(
     session_factory: async_sessionmaker[AsyncSession], test_settings: Settings, whatsapp_sender: Any
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """La API como el servicio consent-api-kizuna (sin header X-API-Key), contra la base de pruebas."""
+    """La API como el servicio consent-api-kizuna (ID token de KIZUNA, sin X-API-Key), contra la base de pruebas."""
     from app.db.session import get_session, get_session_factory
     from app.integrations.whatsapp import get_whatsapp_sender
 
-    settings = test_settings.model_copy(
-        update={"api_surface": "kizuna", "kizuna_inbound_auth": "cloud_run_iam"}
-    )
+    settings = test_settings.model_copy(update=PRIVATE)
+    verifier, _ = verifier_with(KEY)
     app = app_for(settings)
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -243,13 +376,16 @@ async def private_kizuna_client(
         get_session_factory: lambda: session_factory,
         get_settings: lambda: settings,
         get_whatsapp_sender: lambda: whatsapp_sender,
+        get_google_id_token_verifier: lambda: verifier,
     }
     app.dependency_overrides.update(overrides)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=bearer(KEY.sign(claims()))
+    ) as client:
         yield client
 
 
-async def test_private_service_registers_and_queries_without_api_key(
+async def test_private_service_registers_and_queries_with_the_id_token(
     private_kizuna_client: httpx.AsyncClient,
 ) -> None:
     body = {
@@ -269,6 +405,11 @@ async def test_private_service_registers_and_queries_without_api_key(
     # Lo que no es de KIZUNA no está montado en el servicio privado.
     assert (await private_kizuna_client.get("/api/v1/backoffice/auth/me")).status_code == 404
     assert (await private_kizuna_client.get("/api/v1/public/consent-links/x")).status_code == 404
+    # Sin el ID token, el mismo GET → 401.
+    unauthenticated = await private_kizuna_client.get(
+        "/api/v1/consents/TRX-IAM-001", headers={"Authorization": ""}
+    )
+    assert unauthenticated.status_code == 401
 
 
 # --- Variables del servicio privado: scripts/kizuna_env.py (criterio I1.5) ---
@@ -287,10 +428,10 @@ def test_generated_env_only_changes_the_two_keys() -> None:
     assert private["API_SURFACE"] == "kizuna"
     assert private["KIZUNA_INBOUND_AUTH"] == "cloud_run_iam"
     assert generated.startswith("# GENERADO por scripts/kizuna_env.py")
-    # Las variables generadas arrancan: API_KEY vacía y cloud_run_iam en la superficie kizuna.
-    check_security_settings(
-        make_settings(api_surface="kizuna", kizuna_inbound_auth="cloud_run_iam", api_key="")
-    )
+    assert {"KIZUNA_ID_TOKEN_AUDIENCES", "KIZUNA_ID_TOKEN_EMAIL"} <= private.keys()
+    # Las variables generadas arrancan (API_KEY vacía, cloud_run_iam en la superficie kizuna) una vez reemplazado
+    # <PROJECT_ID>.
+    check_security_settings(make_settings(**PRIVATE, api_key=""))
 
 
 @pytest.mark.parametrize(

@@ -13,8 +13,8 @@ from app.core.config import Settings, get_settings
 from app.core.security import (
     INVALID_API_KEY,
     MISSING_API_KEY,
-    ApiKeyDep,
     InsecureConfigurationError,
+    KizunaAuthDep,
     add_cors,
     check_security_settings,
 )
@@ -43,7 +43,7 @@ def make_app(settings: Settings) -> FastAPI:
     add_cors(app, settings)
     app.dependency_overrides[get_settings] = lambda: settings
 
-    kizuna = APIRouter(prefix="/api/v1", dependencies=[ApiKeyDep])
+    kizuna = APIRouter(prefix="/api/v1", dependencies=[KizunaAuthDep])
 
     @kizuna.get("/consents/{transaction_id}")
     async def get_consent(transaction_id: str) -> dict[str, str]:

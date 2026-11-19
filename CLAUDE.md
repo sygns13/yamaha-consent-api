@@ -223,21 +223,37 @@ commands. Read it first. This file only adds what is specific to this repo and t
   Google ID token before the app; the app never sees the API Key in Production (no `API_KEY` secret there).
 - `API_SURFACE` (`all` default / `public` / `kizuna`): `app/api/surface.py::routers_for` / `include_routers` (called in
   `app/main.py`). `/health` is always mounted. Unmounted routes are 404.
-- `KIZUNA_INBOUND_AUTH` (`api_key` default / `cloud_run_iam`): `app/core/security.py::authenticated_by_cloud_run` makes
-  `require_api_key` skip **only** when it is `cloud_run_iam` **and** `API_SURFACE=kizuna`. `check_security_settings`:
-  `cloud_run_iam` outside the `kizuna` surface raises `InsecureConfigurationError`; with it, an INFO reminder; on the
-  `public` surface the API Key is not checked. `API_KEY_ENABLED: "true"` stays in the YAML as a fail-safe.
+- `KIZUNA_INBOUND_AUTH` (`api_key` default / `cloud_run_iam`): `app/core/security.py::require_kizuna_auth`
+  (`KizunaAuthDep`, the KIZUNA router dependency) uses the Google ID token **only** when `uses_google_id_token`
+  (`cloud_run_iam` **and** `API_SURFACE=kizuna`); otherwise the API Key as before. `check_security_settings`:
+  `cloud_run_iam` outside the `kizuna` surface, or without `KIZUNA_ID_TOKEN_AUDIENCES`/`KIZUNA_ID_TOKEN_EMAIL` (or
+  with `<...>` placeholders), raises `InsecureConfigurationError`; with them, an INFO reminder; on the `public`
+  surface the API Key is not checked. `API_KEY_ENABLED: "true"` stays in the YAML as a fail-safe.
+- In-app ID token check (spec v1.1, PENDIENTE-33 resolved): `app/core/google_id_token.py::GoogleIdTokenVerifier`
+  (PyJWT + `cryptography`, direct dependency `pyjwt[crypto]`). RS256 only; Google JWKS
+  (`https://www.googleapis.com/oauth2/v3/certs`) cached per `Cache-Control: max-age`, an unknown `kid` refetches at
+  most once a minute; `iss` Google, `exp`/`iat` required (30 s leeway), `aud` in the audiences list, `email` (case-
+  insensitive) and `email_verified` true. `IdTokenError(reason, status_code)`: 401 invalid, 403 other identity, 503
+  keys unavailable. Responses: `{"detail"}` texts `MISSING_ID_TOKEN`/`INVALID_ID_TOKEN`/`FORBIDDEN_ID_TOKEN`/
+  `ID_TOKEN_UNAVAILABLE` (401 adds `WWW-Authenticate: Bearer`); the log carries only the reason. Only the
+  `Authorization` header is read (`X-Serverless-Authorization` arrives without signature). `get_google_id_token_verifier`
+  is an `lru_cache` singleton cleared around every test (`tests/conftest.py::fresh_kizuna_token_provider`). The audience
+  is a fixed custom audience `consent-api-kizuna.<PROJECT_ID>` (`--add-custom-audiences`), not the URL. The full
+  OpenAPI is unchanged (the verifier dependency adds no parameters).
 - `scripts/kizuna_env.py` generates `deploy/cloudrun-kizuna.env.yaml` (gitignored) from `deploy/cloudrun.env.yaml`,
   changing only `API_SURFACE`/`KIZUNA_INBOUND_AUTH` (`--env-vars-file` can't be combined with `--update-env-vars`).
-- `scripts/export_openapi.py --kizuna --server https://<URL_CONSENT_API_KIZUNA> <out>`: only the `kizuna` tag, `http`
-  bearer scheme `GoogleIdToken`, Cloud Run 401/403. The default export (BackOffice snapshot) is unchanged.
+- `scripts/export_openapi.py --kizuna --server https://<URL_CONSENT_API_KIZUNA> --audience consent-api-kizuna.<PROJECT_ID> <out>`:
+  only the `kizuna` tag, `http` bearer scheme `GoogleIdToken`, 401/403/503. The default export (BackOffice snapshot)
+  is unchanged.
 - Postman: folder "KIZUNA vía Cloud Run IAM" (`{{kizuna_api_url}}`, Bearer `{{kizuna_id_token}}`; the token is got
   outside Postman with `gcloud auth print-identity-token --impersonate-service-account=... --audiences=...`).
 - FastAPI 0.162 keeps included routers as `_IncludedRouter` in `app.routes` (not flattened): list effective paths with
   `app.openapi()["paths"]`.
 - Tests: `tests/test_kizuna_cloud_run_iam.py` (surfaces, startup checks incl. subprocess imports of `app.main`, the
-  private service against the test DB without `X-API-Key`, env generation, Postman, no Apigee left) and
-  `tests/test_kizuna_openapi_export.py`.
+  ID token in the dependency, the private service against the test DB with an ID token and without `X-API-Key`, env
+  generation, Postman, no Apigee left), `tests/test_google_id_token.py` (verifier, key cache) and
+  `tests/test_kizuna_openapi_export.py`. `tests/google_token_helpers.py`: local RSA `KeyPair` (its JWKS and signed
+  tokens), `claims(**overrides)`, `FakeCertsFetcher` (counts downloads), `Clock`, `verifier_with(...)`.
 
 ## Postman and the frontend OpenAPI snapshot
 

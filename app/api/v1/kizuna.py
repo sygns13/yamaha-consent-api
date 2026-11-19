@@ -1,4 +1,5 @@
-"""Endpoints para KIZUNA (M2). Todos requieren API Key."""
+"""Endpoints para KIZUNA (M2). Todos requieren autenticación: API Key, o el ID token de Google en el servicio
+privado de Cloud Run (INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md)."""
 
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.security import ApiKeyDep
+from app.core.security import KizunaAuthDep
 from app.db.session import get_session
 from app.integrations.whatsapp import WhatsAppSender, get_whatsapp_sender
 from app.schemas import (
@@ -23,7 +24,7 @@ from app.services.consent_queries import get_consent, list_consents
 from app.services.consents import RegistrationResult, TransactionAlreadyRejectedError, register_consent
 from app.services.kizuna_notifications import KizunaNotifier, get_kizuna_notifier
 
-router = APIRouter(prefix="/api/v1", tags=["kizuna"], dependencies=[ApiKeyDep])
+router = APIRouter(prefix="/api/v1", tags=["kizuna"], dependencies=[KizunaAuthDep])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]

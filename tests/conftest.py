@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 
 from alembic import command
 from app.core.config import Settings, get_settings
+from app.core.google_id_token import get_google_id_token_verifier
 from app.db.base import Base
 from app.integrations.email import EmailMessageData, get_email_sender
 from app.integrations.kizuna_oauth import get_kizuna_token_provider
@@ -43,10 +44,15 @@ TEST_API_KEY = "test-api-key"
 
 @pytest.fixture(autouse=True)
 def fresh_kizuna_token_provider() -> Iterator[None]:
-    """Cada test empieza sin token de KIZUNA en caché (el proveedor es único por proceso y su lock es del loop)."""
+    """Cada test empieza sin token de KIZUNA en caché (el proveedor es único por proceso y su lock es del loop).
+
+    Lo mismo con el verificador del ID token de Google de la entrada (claves en caché y lock).
+    """
     get_kizuna_token_provider.cache_clear()
+    get_google_id_token_verifier.cache_clear()
     yield
     get_kizuna_token_provider.cache_clear()
+    get_google_id_token_verifier.cache_clear()
 
 
 def _test_database_url() -> str:

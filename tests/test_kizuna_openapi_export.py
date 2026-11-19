@@ -11,6 +11,7 @@ import pytest
 from scripts.export_openapi import kizuna_openapi_document, main, openapi_document
 
 SERVER = "https://consent-api-kizuna-ejemplo.a.run.app"
+AUDIENCE = "consent-api-kizuna.proyecto-de-prueba"
 
 
 def test_only_the_kizuna_operations_are_exported() -> None:
@@ -25,7 +26,7 @@ def test_only_the_kizuna_operations_are_exported() -> None:
 
 
 def test_google_id_token_bearer_replaces_the_api_key() -> None:
-    document = kizuna_openapi_document(f"{SERVER}/")
+    document = kizuna_openapi_document(f"{SERVER}/", AUDIENCE)
     assert document["servers"] == [
         {"url": SERVER, "description": "Cloud Run consent-api-kizuna (Producción)"}
     ]
@@ -41,9 +42,10 @@ def test_google_id_token_bearer_replaces_the_api_key() -> None:
     for ops in document["paths"].values():
         for operation in ops.values():
             assert operation["security"] == [{"GoogleIdToken": []}]
-            assert {"401", "403"} <= set(operation["responses"])
+            assert {"401", "403", "503"} <= set(operation["responses"])
     description = document["info"]["description"]
-    assert f"`{SERVER}`" in description
+    assert f"`{AUDIENCE}` (no la URL)" in description
+    assert "`Authorization`" in description
     assert "https://oauth2.googleapis.com/token" in description
     dumped = json.dumps(document)
     for forbidden in ("ApiKey", "X-API-Key", "Apigee", "apigee", "clientCredentials"):
@@ -70,11 +72,14 @@ def test_cli_writes_the_kizuna_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     output = tmp_path / "openapi-kizuna.json"
-    monkeypatch.setattr("sys.argv", ["export_openapi", "--kizuna", "--server", SERVER, str(output)])
+    monkeypatch.setattr(
+        "sys.argv", ["export_openapi", "--kizuna", "--server", SERVER, "--audience", AUDIENCE, str(output)]
+    )
     main()
     text = output.read_text(encoding="utf-8")
     assert text.endswith("}\n") and "\r\n" not in text
     assert json.loads(text)["servers"][0]["url"] == SERVER
+    assert AUDIENCE in json.loads(text)["info"]["description"]
     assert "OpenAPI exportado" in capsys.readouterr().out
 
 
