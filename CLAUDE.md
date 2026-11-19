@@ -13,7 +13,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.6): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
-- `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.1): OAuth 2.0 with KIZUNA (Apigee inbound, Entra ID
+- `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.2): OAuth 2.0 with KIZUNA (Apigee inbound, Entra ID
   outbound). For KIZUNA authentication it wins. Progress: `../REPORTE_CRITERIOS_KIZUNA_OAUTH2.md`.
 - Deploy: `README.md` "Despliegue manual en Google Cloud" (step 7 = BackOffice), `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`
   section 19 and `../GUIA_DESPLIEGUE_VPS_PRUEBAS.md` section 13. Since 17/11/2026 the test VPS runs `4214ea3` with head
@@ -183,7 +183,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
   - `test_bo_cli.py::test_purge_requires_the_owner` creates a temporary role (`bo_purge_test_*`) with
     `consent_app`-like grants and drops it at the end; it skips if the DB user cannot create roles.
 
-## KIZUNA OAuth 2.0 code map (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, phase K1)
+## KIZUNA OAuth 2.0 code map (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, phases K1–K2)
 
 - `app/integrations/kizuna_oauth.py`:
   - `KizunaTokenProvider` gets the client-credentials token from KIZUNA's Entra ID (`client_secret_post` or `_basic`,
@@ -212,6 +212,18 @@ commands. Read it first. This file only adds what is specific to this repo and t
   - Rebuild the container after changing it: `docker compose up -d --build kizuna-mock`.
 - Tests: `tests/test_kizuna_oauth.py` (mock as ASGI transport, plus `routed_transport` for odd token responses),
   `tests/test_kizuna_mock.py` (OAuth section) and `tests/test_e2e_local.py::test_accepted_with_oauth2`.
+- K2, Apigee:
+  - `deploy/apigee/{kizuna-oauth,kizuna-consents}/apiproxy/` hold the XML bundles; `deploy/apigee/README.md` has the
+    REST commands, the eval org steps and the K2.3/K3 checklist. `deploy/` is not in the image.
+  - Rules: no hosts, URLs or secrets in the bundles (the target is the TargetServer `consent-api`; the key comes from
+    the KVM `consent-backend` into `private.backend_api_key`). The token response is built by `AM-TokenResponse`
+    (`GenerateResponse` disabled). `grant_type` is checked with `RaiseFault` before `OAuthV2`. ProxyEndpoint
+    FaultRules are evaluated bottom-up. The product has `/**`, and the proxy returns 404 for other routes.
+  - `scripts/package_apigee.py` builds reproducible zips into `deploy/apigee/dist/` (gitignored).
+  - `scripts/export_openapi.py --kizuna --server https://<API_HOST> <out>` exports only the `kizuna` tag, with an
+    OAuth2 `clientCredentials` scheme and pruned schemas. The default export (BackOffice snapshot) is unchanged.
+  - Postman: folder "KIZUNA vía Apigee (OAuth 2.0)" (token request + Bearer; variables `apigee_*`).
+  - Tests: `tests/test_apigee_bundles.py` (XML, Annex A texts, zip, Postman) and `tests/test_kizuna_openapi_export.py`.
 
 ## Postman and the frontend OpenAPI snapshot
 

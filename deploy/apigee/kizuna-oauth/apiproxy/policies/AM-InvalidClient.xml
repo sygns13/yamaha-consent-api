@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- FaultRule: client_id o client_secret inválido, o App revocada (Anexo A.1). -->
+<AssignMessage name="AM-InvalidClient">
+    <DisplayName>AM-InvalidClient</DisplayName>
+    <Set>
+        <Headers>
+            <Header name="Cache-Control">no-store</Header>
+            <Header name="WWW-Authenticate">Basic realm="kizuna-oauth"</Header>
+        </Headers>
+        <Payload contentType="application/json">{"error":"invalid_client","error_description":"Credenciales del cliente inválidas"}</Payload>
+        <StatusCode>401</StatusCode>
+    </Set>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

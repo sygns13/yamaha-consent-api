@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- FaultRule: el token no tiene el scope kizuna.consents (Anexo A.2). -->
+<AssignMessage name="AM-InsufficientScope">
+    <DisplayName>AM-InsufficientScope</DisplayName>
+    <Set>
+        <Headers>
+            <Header name="WWW-Authenticate">Bearer error="insufficient_scope"</Header>
+        </Headers>
+        <Payload contentType="application/json">{"detail":"El token no tiene permiso para esta operación"}</Payload>
+        <StatusCode>403</StatusCode>
+    </Set>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

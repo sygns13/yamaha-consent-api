@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- grant_type distinto de client_credentials (Anexo A.1). -->
+<RaiseFault name="RF-UnsupportedGrantType">
+    <DisplayName>RF-UnsupportedGrantType</DisplayName>
+    <FaultResponse>
+        <Set>
+            <Headers>
+                <Header name="Cache-Control">no-store</Header>
+            </Headers>
+            <Payload contentType="application/json">{"error":"unsupported_grant_type","error_description":"Solo se admite grant_type=client_credentials"}</Payload>
+            <StatusCode>400</StatusCode>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

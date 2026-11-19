@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    POST /oauth2/token (sin backend). INTEGRACION_KIZUNA_OAUTH2.spec.md, sección 3.1.
+
+    grant_type se valida con RaiseFault ANTES de OAuthV2: la documentación de Apigee advierte que el fallo
+    UnSupportedGrantType de OAuthV2 no entra al flujo de errores (una FaultRule no lo capturaría).
+    Las FaultRules de un ProxyEndpoint se evalúan de abajo hacia arriba; se ejecuta la primera cuya condición es
+    verdadera.
+-->
+<ProxyEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request/>
+        <Response/>
+    </PreFlow>
+    <Flows>
+        <Flow name="token">
+            <Description>Token por client credentials</Description>
+            <Request>
+                <Step>
+                    <Name>RF-MissingGrantType</Name>
+                    <Condition>(request.formparam.grant_type = null) or (request.formparam.grant_type = "")</Condition>
+                </Step>
+                <Step>
+                    <Name>RF-UnsupportedGrantType</Name>
+                    <Condition>request.formparam.grant_type != "client_credentials"</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-GenerateToken</Name>
+                </Step>
+            </Request>
+            <Response>
+                <Step>
+                    <Name>AM-TokenResponse</Name>
+                </Step>
+            </Response>
+            <Condition>(proxy.pathsuffix MatchesPath "/token") and (request.verb = "POST")</Condition>
+        </Flow>
+        <Flow name="not-found">
+            <Description>Cualquier otra ruta o método</Description>
+            <Request>
+                <Step>
+                    <Name>RF-NotFound</Name>
+                </Step>
+            </Request>
+            <Response/>
+        </Flow>
+    </Flows>
+    <PostFlow name="PostFlow">
+        <Request/>
+        <Response/>
+    </PostFlow>
+    <FaultRules>
+        <FaultRule name="invalid-request">
+            <Step>
+                <Name>AM-InvalidRequest</Name>
+            </Step>
+            <Condition>fault.name Matches "*InvalidRequest"</Condition>
+        </FaultRule>
+        <FaultRule name="invalid-client">
+            <!-- Con GenerateResponse deshabilitado el fallo es InvalidClientIdentifier; con la respuesta por defecto,
+                 invalid_client. Se capturan los dos. -->
+            <Step>
+                <Name>AM-InvalidClient</Name>
+            </Step>
+            <Condition>(fault.name Matches "*InvalidClientIdentifier") or (fault.name Matches "*invalid_client")</Condition>
+        </FaultRule>
+    </FaultRules>
+    <HTTPProxyConnection>
+        <BasePath>/oauth2</BasePath>
+    </HTTPProxyConnection>
+    <RouteRule name="no-target"/>
+</ProxyEndpoint>

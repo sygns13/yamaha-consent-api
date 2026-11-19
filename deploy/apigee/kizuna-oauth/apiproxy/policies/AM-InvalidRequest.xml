@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- FaultRule: OAuthV2 InvalidRequest (parámetros faltantes o incorrectos; Anexo A.1). -->
+<AssignMessage name="AM-InvalidRequest">
+    <DisplayName>AM-InvalidRequest</DisplayName>
+    <Set>
+        <Headers>
+            <Header name="Cache-Control">no-store</Header>
+        </Headers>
+        <Payload contentType="application/json">{"error":"invalid_request","error_description":"Petición de token inválida"}</Payload>
+        <StatusCode>400</StatusCode>
+    </Set>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

@@ -328,7 +328,7 @@ read -rs CLAVE_APP
 printf '%s' "postgresql+asyncpg://consent_app:$CLAVE_APP@/consents_db?host=/cloudsql/$INSTANCE_CONNECTION" \
   | gcloud secrets create DATABASE_URL --replication-policy=automatic --data-file=-
 
-# API_KEY: la que usará KIZUNA (se entrega por un canal seguro)
+# API_KEY: la usa Apigee para llamar a la API (KVM; deploy/apigee/README.md). NO se entrega a KIZUNA: KIZUNA usa OAuth 2.0
 API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 printf '%s' "$API_KEY" | gcloud secrets create API_KEY --replication-policy=automatic --data-file=-
 
@@ -393,8 +393,10 @@ gcloud run deploy consent-api \
 
 - `--min-instances=1` y `--no-cpu-throttling` (CPU siempre asignada) son obligatorios. Los callbacks a KIZUNA y sus
   reintentos corren después de responder (M5), y sin CPU asignada se congelarían.
-- `--allow-unauthenticated`: el servicio es público porque lo llaman KIZUNA y Twilio. Los endpoints de KIZUNA se
-  protegen con la API Key y el webhook con la firma de Twilio.
+- `--allow-unauthenticated`: el servicio es público porque lo llaman Apigee (por KIZUNA), Twilio y la landing. Los
+  endpoints de KIZUNA se protegen con la API Key, que solo conoce Apigee (KIZUNA usa OAuth 2.0 contra Apigee:
+  `deploy/apigee/README.md` y la sección 20 de `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`), y el webhook con la firma de
+  Twilio.
 - `--set-secrets` reemplaza todos los secretos del servicio. Cuando exista `KIZUNA_OAUTH_CLIENT_SECRET`, agregar
   `,KIZUNA_OAUTH_CLIENT_SECRET=KIZUNA_OAUTH_CLIENT_SECRET:latest` (en Producción el callback usa
   `KIZUNA_CALLBACK_AUTH_MODE=oauth2`; `KIZUNA_CALLBACK_AUTH_VALUE` solo se usa en el modo `header`). Para fijar una

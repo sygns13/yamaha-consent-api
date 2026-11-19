@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    /api/v1/consents de KIZUNA. INTEGRACION_KIZUNA_OAUTH2.spec.md, sección 3.2.
+
+    - PreFlow: valida el Bearer (scope kizuna.consents), lee la API Key del KVM del entorno y la pone en X-API-Key
+      (quitando Authorization y el X-API-Key del cliente).
+    - Flows: solo las rutas del contrato v1.4, sin barra final. Cualquier otra → 404 (el API Product incluye todo el
+      proxy, /**, para que una ruta desconocida con token válido dé 404 y no 401). Con barra final la API respondería
+      307 con un Location que apunta al host del backend: por eso "/api/v1/consents/" también es 404.
+    - FaultRules de un ProxyEndpoint: se evalúan de abajo hacia arriba y se ejecuta la primera cuya condición es
+      verdadera. insufficient-scope va al final porque InsufficientScope también marca OA-VerifyToken como fallida.
+-->
+<ProxyEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step>
+                <Name>OA-VerifyToken</Name>
+            </Step>
+            <Step>
+                <Name>KVM-GetBackendKey</Name>
+            </Step>
+            <Step>
+                <Name>AM-BackendHeaders</Name>
+            </Step>
+        </Request>
+        <Response/>
+    </PreFlow>
+    <Flows>
+        <Flow name="create">
+            <Description>POST /api/v1/consents</Description>
+            <Request/>
+            <Response/>
+            <Condition>(request.verb = "POST") and ((proxy.pathsuffix = null) or (proxy.pathsuffix = ""))</Condition>
+        </Flow>
+        <Flow name="list">
+            <Description>GET /api/v1/consents?customerId=&amp;dealerCode=</Description>
+            <Request/>
+            <Response/>
+            <Condition>(request.verb = "GET") and ((proxy.pathsuffix = null) or (proxy.pathsuffix = ""))</Condition>
+        </Flow>
+        <Flow name="detail">
+            <Description>GET /api/v1/consents/{IdentifierId}</Description>
+            <Request/>
+            <Response/>
+            <Condition>(request.verb = "GET") and (proxy.pathsuffix MatchesPath "/*") and (proxy.pathsuffix != "/")</Condition>
+        </Flow>
+        <Flow name="not-found">
+            <Description>Cualquier otra ruta o método</Description>
+            <Request>
+                <Step>
+                    <Name>RF-NotFound</Name>
+                </Step>
+            </Request>
+            <Response/>
+        </Flow>
+    </Flows>
+    <PostFlow name="PostFlow">
+        <Request/>
+        <Response/>
+    </PostFlow>
+    <FaultRules>
+        <FaultRule name="invalid-token">
+            <Step>
+                <Name>AM-MissingToken</Name>
+                <Condition>request.header.Authorization = null</Condition>
+            </Step>
+            <Step>
+                <Name>AM-InvalidToken</Name>
+                <Condition>request.header.Authorization != null</Condition>
+            </Step>
+            <Condition>oauthV2.OA-VerifyToken.failed = true</Condition>
+        </FaultRule>
+        <FaultRule name="insufficient-scope">
+            <Step>
+                <Name>AM-InsufficientScope</Name>
+            </Step>
+            <Condition>fault.name Matches "*InsufficientScope"</Condition>
+        </FaultRule>
+    </FaultRules>
+    <HTTPProxyConnection>
+        <BasePath>/api/v1/consents</BasePath>
+    </HTTPProxyConnection>
+    <RouteRule name="default">
+        <TargetEndpoint>default</TargetEndpoint>
+    </RouteRule>
+</ProxyEndpoint>

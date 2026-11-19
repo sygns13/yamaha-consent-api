@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f1c2a7e-3b9d-4c55-9a0e-2d8f5b7c1e40",
     "name": "Yamaha Consent API",
-    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `kizuna_mock_token`: Bearer del mock; lo completa `Mock KIZUNA / Pedir token (OAuth2)`.\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n- `backoffice_base_url` y las variables `bo_*`, `user_*`, `dealer_*` y `reset_token`: carpeta `BackOffice` (ver su descripción).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
+    "description": "Endpoints del backend de conformidades (yamaha-consent-api) y del mock de KIZUNA.\n\n**Variables de la colección**\n- `base_url`: URL del backend (local: `http://localhost:8000`).\n- `api_key`: valor de `API_KEY` del `.env`. Se envía en `X-API-Key` en los endpoints de KIZUNA. Con `API_KEY_ENABLED=false` se ignora.\n- `token`: token del enlace de la landing. Viaja solo en el WhatsApp y nunca se guarda ni se loguea; en local se obtiene con `uv run python -m scripts.issue_local_link {{transaction_id}}` (imprime `token=...`).\n- `transaction_id`: el `IdentifierId`; lo completa `Registrar cliente` con el ID que creó.\n- `customer_id` y `dealer_code`: `customerId` y `dealerCode` del cliente de prueba.\n- `kizuna_mock_url`: mock de KIZUNA de docker compose (`http://localhost:8081`).\n- `kizuna_mock_token`: Bearer del mock; lo completa `Mock KIZUNA / Pedir token (OAuth2)`.\n- `apigee_base_url`, `apigee_client_id`, `apigee_client_secret` y `apigee_access_token`: carpeta `KIZUNA vía Apigee (OAuth 2.0)`.\n- `twilio_auth_token` y `message_sid`: solo para el webhook de Twilio (ver su carpeta).\n- `backoffice_base_url` y las variables `bo_*`, `user_*`, `dealer_*` y `reset_token`: carpeta `BackOffice` (ver su descripción).\n\n**Flujo local**\n1. `docker compose up -d` y `uv run uvicorn app.main:app --reload --port 8000`.\n2. KIZUNA → `Registrar cliente` (201).\n3. En una terminal: `uv run python -m scripts.issue_local_link <transaction_id>` y copiar el token en la variable `token`.\n4. Landing → `Validar enlace` y `Enviar respuestas`.\n5. Con `KIZUNA_CALLBACK_ENABLED=true`, el callback llega al mock: `Mock KIZUNA / Payloads recibidos`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -22,6 +22,10 @@
     { "key": "dealer_code", "value": "DEALER-001", "type": "string" },
     { "key": "kizuna_mock_url", "value": "http://localhost:8081", "type": "string" },
     { "key": "kizuna_mock_token", "value": "", "type": "string" },
+    { "key": "apigee_base_url", "value": "https://<API_HOST>", "type": "string" },
+    { "key": "apigee_client_id", "value": "", "type": "string" },
+    { "key": "apigee_client_secret", "value": "", "type": "string" },
+    { "key": "apigee_access_token", "value": "", "type": "string" },
     { "key": "twilio_auth_token", "value": "", "type": "string" },
     { "key": "message_sid", "value": "SM00000000000000000000000000000000", "type": "string" },
     { "key": "backoffice_base_url", "value": "http://localhost:8000", "type": "string" },
@@ -164,6 +168,131 @@
               ]
             },
             "description": "Registros del customerId (y dealerCode), del más reciente al más antiguo. Incluye los rechazados y las copias vinculadas. Sin resultados → `200 []`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "KIZUNA vía Apigee (OAuth 2.0)",
+      "description": "Lo que usa KIZUNA en Producción (INTEGRACION_KIZUNA_OAUTH2.spec.md): primero `Pedir token` (client credentials contra Apigee), que guarda el Bearer en `apigee_access_token`; las demás peticiones lo envían en `Authorization: Bearer`. Apigee valida el token y llama a la API con su API Key, que KIZUNA no conoce.\n\nVariables: `apigee_base_url` (`https://<API_HOST>`, o el hostname `nip.io` de la organización de evaluación), `apigee_client_id` y `apigee_client_secret` (Consumer Key y Consumer Secret de la App de Apigee). El token dura 3600 s.",
+      "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{apigee_access_token}}", "type": "string" }] },
+      "item": [
+        {
+          "name": "Pedir token (client credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 con token Bearer', () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "  pm.expect(pm.response.json().token_type).to.eql('Bearer');",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('apigee_access_token', pm.response.json().access_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "{{apigee_client_id}}" },
+                { "key": "client_secret", "value": "{{apigee_client_secret}}" },
+                { "key": "scope", "value": "kizuna.consents" }
+              ]
+            },
+            "url": { "raw": "{{apigee_base_url}}/oauth2/token", "host": ["{{apigee_base_url}}"], "path": ["oauth2", "token"] },
+            "description": "`200 {\"access_token\", \"token_type\": \"Bearer\", \"expires_in\", \"scope\"}`. Credenciales en el cuerpo (como aquí) o en `Authorization: Basic`. Errores RFC 6749: `401 invalid_client`, `400 invalid_request`, `400 unsupported_grant_type`."
+          }
+        },
+        {
+          "name": "Registrar cliente (nuevo IdentifierId)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 CREATED o 200 UPDATED', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "if (body.IdentifierId) {",
+                  "  pm.collectionVariables.set('transaction_id', body.IdentifierId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"_request\": {\n    \"IdentifierId\": \"TRX-{{$timestamp}}\",\n    \"customerId\": \"{{customer_id}}\",\n    \"customerName\": \"juan  pérez   gómez\",\n    \"customerPhone\": \"+51 987 654 321\",\n    \"customerEmail\": \"juan.perez@mail.com\",\n    \"dealerName\": \"ABC Motors\",\n    \"dealerCode\": \"{{dealer_code}}\",\n    \"requestDateTime\": \"2026-11-02T10:35:00-05:00\",\n    \"additionalInfo\": {}\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{apigee_base_url}}/api/v1/consents", "host": ["{{apigee_base_url}}"], "path": ["api", "v1", "consents"] },
+            "description": "Mismo contrato que `KIZUNA (API Key) / Registrar cliente`, con el Bearer de Apigee. En Producción usar `dealer_code` = `DEALER-TEST` (limpieza del paso 14 de la guía)."
+          }
+        },
+        {
+          "name": "Consultar por IdentifierId",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{apigee_base_url}}/api/v1/consents/{{transaction_id}}",
+              "host": ["{{apigee_base_url}}"],
+              "path": ["api", "v1", "consents", "{{transaction_id}}"]
+            },
+            "description": "Un registro. `404` si no existe (respuesta de la API)."
+          }
+        },
+        {
+          "name": "Listar por customerId y dealerCode",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{apigee_base_url}}/api/v1/consents?customerId={{customer_id}}&dealerCode={{dealer_code}}",
+              "host": ["{{apigee_base_url}}"],
+              "path": ["api", "v1", "consents"],
+              "query": [
+                { "key": "customerId", "value": "{{customer_id}}" },
+                { "key": "dealerCode", "value": "{{dealer_code}}", "description": "Opcional" }
+              ]
+            },
+            "description": "Registros del customerId (y dealerCode)."
+          }
+        },
+        {
+          "name": "Sin token (401)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{apigee_base_url}}/api/v1/consents/{{transaction_id}}",
+              "host": ["{{apigee_base_url}}"],
+              "path": ["api", "v1", "consents", "{{transaction_id}}"]
+            },
+            "description": "Apigee responde `401 {\"detail\": \"Falta el token de acceso\"}` con `WWW-Authenticate: Bearer`; la petición no llega a la API."
+          }
+        },
+        {
+          "name": "Ruta no expuesta (404)",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{apigee_base_url}}/api/v1/consents/{{transaction_id}}",
+              "host": ["{{apigee_base_url}}"],
+              "path": ["api", "v1", "consents", "{{transaction_id}}"]
+            },
+            "description": "Con un token válido, cualquier ruta o método fuera del contrato → `404 {\"detail\": \"Recurso no encontrado\"}` de Apigee."
           }
         }
       ]

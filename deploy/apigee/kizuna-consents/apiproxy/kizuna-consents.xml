@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Endpoints de KIZUNA con Bearer de Apigee, reenviados a la API con su API Key. INTEGRACION_KIZUNA_OAUTH2.spec.md, 3.2–3.3. -->
+<APIProxy name="kizuna-consents">
+    <DisplayName>kizuna-consents</DisplayName>
+    <Description>POST/GET /api/v1/consents de KIZUNA: valida el Bearer y llama a la API con X-API-Key</Description>
+</APIProxy>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Token opaco por client credentials, 3600 s (ExpiresIn en milisegundos). Sin refresh token. -->
+<OAuthV2 name="OA-GenerateToken">
+    <DisplayName>OA-GenerateToken</DisplayName>
+    <Operation>GenerateAccessToken</Operation>
+    <ExpiresIn>3600000</ExpiresIn>
+    <SupportedGrantTypes>
+        <GrantType>client_credentials</GrantType>
+    </SupportedGrantTypes>
+    <GrantType>request.formparam.grant_type</GrantType>
+    <Scope>request.formparam.scope</Scope>
+    <!-- La respuesta la arma AM-TokenResponse: la de Apigee usa "BearerToken", expires_in como texto e incluye el
+         correo del Developer. -->
+    <GenerateResponse enabled="false"/>
+</OAuthV2>

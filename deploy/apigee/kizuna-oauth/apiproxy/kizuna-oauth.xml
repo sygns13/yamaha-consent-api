@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Token endpoint OAuth 2.0 (client credentials) para KIZUNA. INTEGRACION_KIZUNA_OAUTH2.spec.md, sección 3.1. -->
+<APIProxy name="kizuna-oauth">
+    <DisplayName>kizuna-oauth</DisplayName>
+    <Description>Token endpoint OAuth 2.0 (client credentials) para KIZUNA: POST /oauth2/token</Description>
+</APIProxy>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Ruta o método fuera del contrato de KIZUNA (Anexo A.2). -->
+<RaiseFault name="RF-NotFound">
+    <DisplayName>RF-NotFound</DisplayName>
+    <FaultResponse>
+        <Set>
+            <Payload contentType="application/json">{"detail":"Recurso no encontrado"}</Payload>
+            <StatusCode>404</StatusCode>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    Destino: TargetServer "consent-api" del entorno (TLS, 443). Producción: host de Cloud Run; organización de
+    evaluación (K2.3): host del VPS de pruebas. El mismo bundle sirve para los dos: solo cambia el TargetServer.
+    Path se antepone al resto de la ruta del proxy (/api/v1/consents + /{IdentifierId}).
+-->
+<TargetEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request/>
+        <Response/>
+    </PreFlow>
+    <Flows/>
+    <PostFlow name="PostFlow">
+        <Request/>
+        <Response/>
+    </PostFlow>
+    <HTTPTargetConnection>
+        <LoadBalancer>
+            <Server name="consent-api"/>
+        </LoadBalancer>
+        <Path>/api/v1/consents</Path>
+    </HTTPTargetConnection>
+</TargetEndpoint>

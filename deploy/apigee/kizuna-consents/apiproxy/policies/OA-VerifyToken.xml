@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Bearer en Authorization (por defecto). Falla si el token no existe, venció, fue revocado o no tiene el scope. -->
+<OAuthV2 name="OA-VerifyToken">
+    <DisplayName>OA-VerifyToken</DisplayName>
+    <Operation>VerifyAccessToken</Operation>
+    <Scope>kizuna.consents</Scope>
+</OAuthV2>
