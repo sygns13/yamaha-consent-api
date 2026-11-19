@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Variables del servicio consent-api-kizuna (generadas por scripts/kizuna_env.py)
+deploy/cloudrun-kizuna.env.yaml

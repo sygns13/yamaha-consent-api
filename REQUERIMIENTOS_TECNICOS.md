@@ -4,7 +4,7 @@
 |---|---|
 | Cliente | Yamaha – Perú |
 | Proveedor / Responsable técnico | Cristian Fernando Chávez Torres |
-| Versión del documento | 1.6 — 18/11/2026 (1.5 + autenticación OAuth 2.0 con KIZUNA en ambos sentidos, especificada en `INTEGRACION_KIZUNA_OAUTH2.spec.md`; incorpora las decisiones de la sección 11) |
+| Versión del documento | 1.7 — 19/11/2026 (1.6 + la entrada de KIZUNA pasa de Apigee a Cloud Run IAM, especificada en `INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`; solo referencias) · 1.6 — 18/11/2026 (1.5 + autenticación OAuth 2.0 con KIZUNA en ambos sentidos, especificada en `INTEGRACION_KIZUNA_OAUTH2.spec.md`; incorpora las decisiones de la sección 11) |
 | Nube | Google Cloud (proyecto provisto por Yamaha). **Base de datos, backend y landing se despliegan en Google Cloud** |
 | Stack | Python + FastAPI · PostgreSQL (Cloud SQL) · Astro · Twilio WhatsApp |
 | Ambiente | Solo Producción (desarrollo y pruebas en local) |
@@ -47,7 +47,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
 - Reintentos o reenvíos del WhatsApp cuando el cliente no abre el enlace.
 - Paneles de administración, reportes o formularios adicionales.
   > **Nota (15/11/2026):** Los paneles de administración del BackOffice se especifican en `BACKOFFICE_DEALERS.spec.md`.
-  > **Nota (18/11/2026):** La autenticación OAuth 2.0 entre KIZUNA y la API (Apigee en la entrada, Entra ID de KIZUNA en la salida) se especifica en `INTEGRACION_KIZUNA_OAUTH2.spec.md`.
+  > **Nota (18/11/2026, actualizada el 19/11/2026):** La autenticación entre KIZUNA y la API se especifica en dos documentos: la **entrada** (KIZUNA → API) con Cloud Run IAM + cuenta de servicio en `INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md` (reemplaza a Apigee, descartado por costo), y la **salida** (callback, Entra ID de KIZUNA) en `INTEGRACION_KIZUNA_OAUTH2.spec.md`.
 - **CI/CD automatizado** (solo despliegue manual).
 - Ambientes de QA o Desarrollo en la nube.
 
@@ -325,7 +325,7 @@ Plataforma para gestionar digitalmente las conformidades de tratamiento de datos
   - Sin clave → `401 {"detail": "Falta la API Key"}`. Con clave inválida → `401 {"detail": "API Key inválida"}`.
   - Los rechazos se registran en el log con el motivo y la ruta, **nunca** con la clave recibida ni la IP.
   - La API Key se documenta en OpenAPI (esquema `ApiKey`, botón *Authorize* de Swagger).
-  - **Producción (v1.6):** KIZUNA ya no usa la API Key. Se autentica con OAuth 2.0 contra Apigee, y Apigee llama a la API con esta API Key (`INTEGRACION_KIZUNA_OAUTH2.spec.md`). Este apartado sigue vigente para la API.
+  - **Producción (v1.7):** KIZUNA no usa la API Key. Llama a un servicio de Cloud Run privado (`consent-api-kizuna`) con un ID token de Google de una cuenta de servicio, que valida Cloud Run IAM; en ese servicio la API no pide la API Key (`INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`). Este apartado sigue vigente en local y en el VPS de pruebas.
 - Los endpoints públicos (`/api/v1/public/*`) **no** usan API Key: los protege el token del enlace.
 - CORS: solo los orígenes de `CORS_ALLOWED_ORIGINS` (dominio de la landing). Se permiten únicamente `GET` y `POST` con el header `Content-Type`, sin credenciales (cookies), y se expone `X-Request-ID`. El header de la API Key **no** se permite desde el navegador: KIZUNA llama de servidor a servidor y no necesita CORS.
 
@@ -908,3 +908,4 @@ Los puntos resueltos se conservan con su ID para mantener la trazabilidad (detal
 | 15/11/2026 | Ampliación · BackOffice | Los paneles de administración del BackOffice (login, usuarios, roles, Gestión de Dealers, bitácora) se especifican en `requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.1), que amplía este documento sin modificar sus contratos (KIZUNA, landing, webhook de Twilio). Para el BackOffice manda ese documento; para todo lo demás, este. |
 | 17/11/2026 | M6 · Política de privacidad en un pop-up (v1.5) | Cada "política de privacidad" abre un pop-up en la misma página con el texto copiado tal cual de la página oficial de Yamaha (17/11/2026; no se puede incrustar por `X-Frame-Options: SAMEORIGIN`). Aceptar marca el check de ese enlace; Cancelar y Escape lo desmarcan. Reemplaza la decisión del 27/10/2026 (pestaña nueva). La landing deja de usar `PUBLIC_PRIVACY_POLICY_URL` y el `privacyPolicyUrl` del `GET` (que la API sigue devolviendo); la evidencia sigue guardando `PRIVACY_POLICY_URL`. |
 | 18/11/2026 | Autenticación con KIZUNA (v1.6) | OAuth 2.0 client credentials en ambos sentidos, especificado en `requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.1). Entrada: Apigee emite y valida los tokens de KIZUNA y llama a la API con la API Key de §2.1. Salida: la API obtiene el token del Entra ID de KIZUNA. No cambia el contrato de datos v1.4. Para la autenticación entre KIZUNA y la API manda ese documento; para todo lo demás, este. |
+| 19/11/2026 | Entrada de KIZUNA (v1.7) | Apigee se descarta por costo. La entrada usa Cloud Run IAM + cuenta de servicio (`requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`): la misma imagen en dos servicios de Cloud Run (público y privado para KIZUNA). La salida sigue en `INTEGRACION_KIZUNA_OAUTH2.spec.md`. No cambia el contrato de datos v1.4 |

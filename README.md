@@ -238,6 +238,10 @@ Colección en `postman/collection.json`: health, endpoints de KIZUNA, landing, w
 BackOffice. Variables: `base_url`, `api_key`, `token`, `transaction_id` (el `IdentifierId`), `customer_id`,
 `dealer_code`, `kizuna_mock_url`, `twilio_auth_token`, `message_sid`.
 
+Carpeta **KIZUNA vía Cloud Run IAM** (Producción, `../requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`):
+variables `kizuna_api_url` (URL del servicio privado `consent-api-kizuna`) y `kizuna_id_token` (ID token de Google de
+la cuenta de servicio `kizuna-caller`, obtenido fuera de Postman; se pega en *Current value*).
+
 Carpeta **BackOffice** (sin API Key): variable `backoffice_base_url`; Postman guarda la cookie `__session` del login y
 la envía sola. Las mutaciones ya llevan `X-Requested-With: XMLHttpRequest`. Usuario y contraseña en `bo_username` y
 `bo_password` (nunca guardar una contraseña real en la colección); `user_id`, `user_version`, `dealer_id` y
@@ -260,7 +264,15 @@ Para el webhook de Twilio, con `twilio_auth_token` igual a `TWILIO_AUTH_TOKEN` l
 ## Despliegue manual en Google Cloud (M7)
 
 No hay CI/CD: el despliegue es manual y solo a Producción. Los comandos son para Git Bash o Cloud Shell (en PowerShell,
-definir las variables con `$env:NOMBRE = "valor"` y continuar las líneas con `` ` `` en vez de `\`).
+definir las variables con `$env:NOMBRE = "valor"` y continuar las líneas con `` ` `` en vez de `\`). El orden completo,
+con la **revisión previa de las políticas de la organización** (sección 2.1), está en
+`../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`.
+
+La misma imagen se despliega en **dos servicios** (`../requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`):
+- `consent-api`, público: landing, webhook de Twilio y BackOffice (`API_SURFACE=public`, sin los endpoints de KIZUNA);
+- `consent-api-kizuna`, privado con Cloud Run IAM: solo los endpoints de KIZUNA (`API_SURFACE=kizuna`,
+  `KIZUNA_INBOUND_AUTH=cloud_run_iam`). KIZUNA llama con un ID token de Google de la cuenta de servicio `kizuna-caller`;
+  la API no usa la API Key en Producción.
 
 ### 0. Requisitos y variables
 
@@ -300,6 +312,13 @@ gcloud iam service-accounts create consent-api-sa --display-name="consent-api (C
 SA=consent-api-sa@$PROJECT_ID.iam.gserviceaccount.com
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA --role=roles/cloudsql.client
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+
+# Identidad de KIZUNA: sin roles de proyecto; solo podrá invocar consent-api-kizuna (paso 4)
+gcloud iam service-accounts create kizuna-caller --display-name="KIZUNA (invoca consent-api-kizuna)"
+KIZUNA_SA=kizuna-caller@$PROJECT_ID.iam.gserviceaccount.com
+# Tu cuenta puede pedir ID tokens de kizuna-caller para las pruebas (impersonación, sin archivo de clave)
+gcloud iam service-accounts add-iam-policy-binding $KIZUNA_SA --member=user:<TU_CORREO> \
+  --role=roles/iam.serviceAccountTokenCreator
 ```
 
 **Usuario de la aplicación con privilegios mínimos.** Los usuarios creados con `gcloud sql users create` reciben
@@ -317,9 +336,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE consent_owner IN SCHEMA public
 ```
 
 **Secretos** en Secret Manager. Se cargan desde la entrada estándar para que no queden en el historial de la shell ni
-en un archivo, y **sin salto de línea final**: la API Key se compara de forma exacta y un `\n` al final la invalida.
-Por eso se lee el valor con `read -rs` (no se muestra) y se envía con `printf '%s'` (no pegar el valor y Ctrl+D, que
-agrega el salto de línea):
+en un archivo, y **sin salto de línea final** (un `\n` al final invalida claves y URLs). Por eso se lee el valor con
+`read -rs` (no se muestra) y se envía con `printf '%s'` (no pegar el valor y Ctrl+D, que agrega el salto de línea).
+En Producción **no** se crea `API_KEY`: ningún servicio la usa (KIZUNA entra por Cloud Run IAM).
 
 ```bash
 # DATABASE_URL: URL completa con el socket de Cloud SQL (caracteres especiales de la clave codificados en URL: @ → %40)
@@ -327,10 +346,6 @@ agrega el salto de línea):
 read -rs CLAVE_APP
 printf '%s' "postgresql+asyncpg://consent_app:$CLAVE_APP@/consents_db?host=/cloudsql/$INSTANCE_CONNECTION" \
   | gcloud secrets create DATABASE_URL --replication-policy=automatic --data-file=-
-
-# API_KEY: la usa Apigee para llamar a la API (KVM; deploy/apigee/README.md). NO se entrega a KIZUNA: KIZUNA usa OAuth 2.0
-API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-printf '%s' "$API_KEY" | gcloud secrets create API_KEY --replication-policy=automatic --data-file=-
 
 read -rs TWILIO_AUTH_TOKEN
 printf '%s' "$TWILIO_AUTH_TOKEN" | gcloud secrets create TWILIO_AUTH_TOKEN --replication-policy=automatic --data-file=-
@@ -372,13 +387,19 @@ DATABASE_URL="postgresql+asyncpg://consent_owner:<CLAVE_OWNER>@127.0.0.1:5434/co
 `DATABASE_URL` en la línea de comandos tiene prioridad sobre el `.env` local. Al terminar, cerrar el proxy (Ctrl+C).
 Si la clave tiene caracteres especiales, va codificada en URL.
 
-### 4. Desplegar en Cloud Run
+### 4. Desplegar en Cloud Run (dos servicios)
 
-1. Completar los valores `<...>` de `deploy/cloudrun.env.yaml`. Son las variables no secretas; el archivo reemplaza
-   todas las del servicio.
-2. Desplegar:
+1. Completar los valores `<...>` de `deploy/cloudrun.env.yaml` (servicio público). Son las variables no secretas; el
+   archivo reemplaza todas las del servicio.
+2. Generar las del servicio privado (repetirlo después de **cada** cambio en `deploy/cloudrun.env.yaml`):
+   `uv run python -m scripts.kizuna_env` → `deploy/cloudrun-kizuna.env.yaml` (ignorado por git; igual al anterior salvo
+   `API_SURFACE` y `KIZUNA_INBOUND_AUTH`).
+3. Desplegar los dos:
 
 ```bash
+SECRETS=DATABASE_URL=DATABASE_URL:latest,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest
+
+# Público: landing, webhook de Twilio y BackOffice
 gcloud run deploy consent-api \
   --image=$IMAGE:$TAG \
   --region=$REGION \
@@ -386,30 +407,56 @@ gcloud run deploy consent-api \
   --min-instances=1 \
   --no-cpu-throttling \
   --add-cloudsql-instances=$INSTANCE_CONNECTION \
-  --allow-unauthenticated \
+  --no-invoker-iam-check \
   --env-vars-file=deploy/cloudrun.env.yaml \
-  --set-secrets=DATABASE_URL=DATABASE_URL:latest,API_KEY=API_KEY:latest,TWILIO_AUTH_TOKEN=TWILIO_AUTH_TOKEN:latest
+  --set-secrets=$SECRETS
+
+# Privado: solo KIZUNA (Cloud Run IAM)
+gcloud run deploy consent-api-kizuna \
+  --image=$IMAGE:$TAG \
+  --region=$REGION \
+  --service-account=consent-api-sa@$PROJECT_ID.iam.gserviceaccount.com \
+  --min-instances=0 \
+  --no-cpu-throttling \
+  --add-cloudsql-instances=$INSTANCE_CONNECTION \
+  --no-allow-unauthenticated \
+  --env-vars-file=deploy/cloudrun-kizuna.env.yaml \
+  --set-secrets=$SECRETS
+
+# Solo la primera vez: único invocador del servicio privado
+gcloud run services add-iam-policy-binding consent-api-kizuna --region=$REGION \
+  --member=serviceAccount:$KIZUNA_SA --role=roles/run.invoker
 ```
 
-- `--min-instances=1` y `--no-cpu-throttling` (CPU siempre asignada) son obligatorios. Los callbacks a KIZUNA y sus
-  reintentos corren después de responder (M5), y sin CPU asignada se congelarían.
-- `--allow-unauthenticated`: el servicio es público porque lo llaman Apigee (por KIZUNA), Twilio y la landing. Los
-  endpoints de KIZUNA se protegen con la API Key, que solo conoce Apigee (KIZUNA usa OAuth 2.0 contra Apigee:
-  `deploy/apigee/README.md` y la sección 20 de `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`), y el webhook con la firma de
-  Twilio.
-- `--set-secrets` reemplaza todos los secretos del servicio. Cuando exista `KIZUNA_OAUTH_CLIENT_SECRET`, agregar
-  `,KIZUNA_OAUTH_CLIENT_SECRET=KIZUNA_OAUTH_CLIENT_SECRET:latest` (en Producción el callback usa
-  `KIZUNA_CALLBACK_AUTH_MODE=oauth2`; `KIZUNA_CALLBACK_AUTH_VALUE` solo se usa en el modo `header`). Para fijar una
-  versión concreta, usar `:<número>` en vez de `:latest`.
-- Si falta un dato obligatorio la app no arranca y el deploy falla, y la revisión anterior sigue activa. Puede faltar
-  la `API_KEY`, la configuración de Twilio con `TWILIO_SEND_ENABLED=true` o la de KIZUNA con
-  `KIZUNA_CALLBACK_ENABLED=true`. El motivo aparece en los logs con severidad `CRITICAL`.
+- `consent-api`: `--min-instances=1` y `--no-cpu-throttling` (CPU siempre asignada) son obligatorios. Los callbacks a
+  KIZUNA y sus reintentos corren después de responder (M5), y sin CPU asignada se congelarían.
+- `--no-invoker-iam-check`: el servicio público lo llaman Twilio, la landing y el BackOffice. Deja el servicio público
+  sin dar permisos a `allUsers`, así que funciona aunque la organización restrinja las identidades por dominio
+  (`--allow-unauthenticated` fallaría). El webhook se protege con la firma de Twilio y la landing con el token del
+  enlace.
+- `consent-api-kizuna`: `--min-instances=0` (propuesta; costo casi nulo) y `--no-cpu-throttling` (el callback de una
+  copia que nace respondida corre después de responder). Su seguridad es **solo** la configuración de Cloud Run: nunca
+  `--allow-unauthenticated` ni `--no-invoker-iam-check` en este servicio (verificación en el paso 5).
+- `--set-secrets` reemplaza todos los secretos del servicio, y los dos servicios llevan los mismos. Cuando exista
+  `KIZUNA_OAUTH_CLIENT_SECRET`, agregar `,KIZUNA_OAUTH_CLIENT_SECRET=KIZUNA_OAUTH_CLIENT_SECRET:latest` (en Producción el
+  callback usa `KIZUNA_CALLBACK_AUTH_MODE=oauth2`; `KIZUNA_CALLBACK_AUTH_VALUE` solo se usa en el modo `header`). Para
+  fijar una versión concreta, usar `:<número>` en vez de `:latest`.
+- Si falta un dato obligatorio la app no arranca y el deploy falla, y la revisión anterior sigue activa: la
+  configuración de Twilio con `TWILIO_SEND_ENABLED=true`, la de KIZUNA con `KIZUNA_CALLBACK_ENABLED=true`, o
+  `KIZUNA_INBOUND_AUTH=cloud_run_iam` fuera de `API_SURFACE=kizuna`. El motivo aparece en los logs con severidad
+  `CRITICAL`.
 
 ### 5. Verificar
 
 ```bash
 URL=$(gcloud run services describe consent-api --region=$REGION --format='value(status.url)')
-curl $URL/health                                   # {"status":"ok","database":"ok"}
+KIZUNA_URL=$(gcloud run services describe consent-api-kizuna --region=$REGION --format='value(status.url)')
+curl $URL/health                                                   # {"status":"ok","database":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' $URL/api/v1/consents/x    # 404: KIZUNA no está en el servicio público
+curl -s -o /dev/null -w '%{http_code}\n' $KIZUNA_URL/health        # 403: sin token
+ID_TOKEN=$(gcloud auth print-identity-token --impersonate-service-account=$KIZUNA_SA --audiences=$KIZUNA_URL --include-email)
+curl -s -H "Authorization: Bearer $ID_TOKEN" $KIZUNA_URL/health    # {"status":"ok","database":"ok"}
+gcloud run services get-iam-policy consent-api-kizuna --region=$REGION   # solo kizuna-caller con roles/run.invoker
 gcloud run services logs read consent-api --region=$REGION --limit=50
 ```
 
@@ -429,6 +476,7 @@ Twilio firma esa URL exacta, que es contra la que se valida `X-Twilio-Signature`
 ```bash
 gcloud run revisions list --service=consent-api --region=$REGION
 gcloud run services update-traffic consent-api --region=$REGION --to-revisions=<REVISION_ANTERIOR>=100
+# Igual con consent-api-kizuna (sus revisiones tienen otros nombres)
 ```
 
 Las migraciones no se revierten solas. Hacer `alembic downgrade` solo si la versión anterior no funciona con el
@@ -466,6 +514,10 @@ Rollback del BackOffice: tráfico a la revisión anterior (paso 6) y `firebase h
 migraciones (`alembic downgrade b7c2d9e41f60`) borra las 11 tablas y sus datos: solo si es imprescindible.
 
 ### Pendientes antes de habilitar todo en Producción
+
+- Entrada de KIZUNA (`../requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`): que KIZUNA acepte el ID token de
+  Google en lugar de `client_id`/`client_secret` (PENDIENTE-30), las políticas de la organización del proyecto
+  (PENDIENTE-31) y la credencial de `kizuna-caller` con su entrega (PENDIENTE-32; sección 20 de la guía).
 
 - `TWILIO_SEND_ENABLED=true`: cuando la plantilla esté aprobada por Meta y se conozca `TWILIO_CONTENT_SID`
   (PENDIENTE-07 y PENDIENTE-15).

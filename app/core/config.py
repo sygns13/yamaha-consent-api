@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # --- Base de datos ---
     database_url: str
 
+    # --- Endpoints expuestos y autenticación de KIZUNA (INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md, sección 4) ---
+    # all: todos (local y VPS). public: sin los de KIZUNA (Cloud Run consent-api). kizuna: solo los de KIZUNA y
+    # /health (Cloud Run consent-api-kizuna, privado).
+    api_surface: Literal["all", "public", "kizuna"] = "all"
+    # api_key: X-API-Key según API_KEY_ENABLED. cloud_run_iam: la API no valida credenciales porque Cloud Run ya exigió
+    # el ID token de la cuenta de servicio de KIZUNA; solo se admite con API_SURFACE=kizuna.
+    kizuna_inbound_auth: Literal["api_key", "cloud_run_iam"] = "api_key"
+
     # --- Seguridad (endpoints de KIZUNA) ---
     api_key_enabled: bool = True
     api_key_header: str = "X-API-Key"
@@ -122,7 +130,12 @@ class Settings(BaseSettings):
         return value.upper() if isinstance(value, str) else value
 
     @field_validator(
-        "smtp_security", "kizuna_callback_auth_mode", "kizuna_oauth_client_auth_method", mode="before"
+        "smtp_security",
+        "kizuna_callback_auth_mode",
+        "kizuna_oauth_client_auth_method",
+        "api_surface",
+        "kizuna_inbound_auth",
+        mode="before",
     )
     @classmethod
     def _lower_choice(cls, value: object) -> object:

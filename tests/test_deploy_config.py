@@ -35,6 +35,10 @@ def test_template_has_no_secrets() -> None:
 def test_template_production_defaults() -> None:
     env = cloudrun_env()
     assert env["APP_ENV"] == "production"
+    # INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md: este archivo es el del servicio público (sin endpoints de KIZUNA). El
+    # del servicio privado se genera con scripts/kizuna_env.py. API_KEY_ENABLED=true queda como protección (C8).
+    assert env["API_SURFACE"] == "public"
+    assert env["KIZUNA_INBOUND_AUTH"] == "api_key"
     assert env["API_KEY_ENABLED"] == "true"
     assert env["TWILIO_SIGNATURE_VALIDATION_ENABLED"] == "true"
     # M7, paso 5: apagado hasta tener el endpoint real de KIZUNA.

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.v1 import backoffice, health, kizuna, public, webhooks
+from app.api.surface import include_routers
 from app.core.backoffice_security import (
     BACKOFFICE_PREFIX,
     BackofficeError,
@@ -65,8 +65,6 @@ app.add_exception_handler(BackofficeError, backoffice_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 
-app.include_router(health.router)
-app.include_router(kizuna.router)
-app.include_router(public.router)
-app.include_router(webhooks.router)
-app.include_router(backoffice.router)
+# API_SURFACE: todos los endpoints (local y VPS), sin los de KIZUNA (servicio público) o solo los de KIZUNA (servicio
+# privado con Cloud Run IAM).
+include_routers(app, settings)

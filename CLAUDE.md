@@ -13,8 +13,12 @@ commands. Read it first. This file only adds what is specific to this repo and t
 - `../requerimientos/BACKOFFICE_DEALERS.spec.md` (v1.6): the BackOffice (`/api/v1/backoffice/*`, new tables, CLI).
   For the BackOffice it wins over v1.4; it must not change any v1.4 contract.
 - `../REPORTE_CRITERIOS_BACKOFFICE.md`: which BackOffice phases (B0–B9) are closed and what is still open.
-- `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.2): OAuth 2.0 with KIZUNA (Apigee inbound, Entra ID
-  outbound). For KIZUNA authentication it wins. Progress: `../REPORTE_CRITERIOS_KIZUNA_OAUTH2.md`.
+- `../requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md` (v1.0, 19/11/2026): KIZUNA → API in Production through
+  Cloud Run IAM (Google ID token of the service account `kizuna-caller`). It replaces the Apigee inbound of the OAuth2
+  spec (Apigee was dropped for cost). Progress: `../REPORTE_CRITERIOS_KIZUNA_CLOUD_RUN_IAM.md`. Branch
+  `feat/kizuna-cloud-run-iam`; Apigee stays only in `feat/kizuna-oauth2` (`710ef07`).
+- `../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md` (v1.3): still the source for the **outbound** side (API →
+  KIZUNA, Entra ID; section 4, phase K4). Progress: `../REPORTE_CRITERIOS_KIZUNA_OAUTH2.md`.
 - Deploy: `README.md` "Despliegue manual en Google Cloud" (step 7 = BackOffice), `../GUIA_DESPLIEGUE_PRODUCCION_GCP.md`
   section 19 and `../GUIA_DESPLIEGUE_VPS_PRUEBAS.md` section 13. Since 17/11/2026 the test VPS runs `4214ea3` with head
   `b6b72cd353a6` and `REVOKE UPDATE, DELETE ON audit_logs FROM consent_app` applied.
@@ -183,7 +187,7 @@ commands. Read it first. This file only adds what is specific to this repo and t
   - `test_bo_cli.py::test_purge_requires_the_owner` creates a temporary role (`bo_purge_test_*`) with
     `consent_app`-like grants and drops it at the end; it skips if the DB user cannot create roles.
 
-## KIZUNA OAuth 2.0 code map (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, phases K1–K2)
+## KIZUNA OAuth 2.0 outbound code map (`../requerimientos/INTEGRACION_KIZUNA_OAUTH2.spec.md`, phase K1)
 
 - `app/integrations/kizuna_oauth.py`:
   - `KizunaTokenProvider` gets the client-credentials token from KIZUNA's Entra ID (`client_secret_post` or `_basic`,
@@ -212,18 +216,28 @@ commands. Read it first. This file only adds what is specific to this repo and t
   - Rebuild the container after changing it: `docker compose up -d --build kizuna-mock`.
 - Tests: `tests/test_kizuna_oauth.py` (mock as ASGI transport, plus `routed_transport` for odd token responses),
   `tests/test_kizuna_mock.py` (OAuth section) and `tests/test_e2e_local.py::test_accepted_with_oauth2`.
-- K2, Apigee:
-  - `deploy/apigee/{kizuna-oauth,kizuna-consents}/apiproxy/` hold the XML bundles; `deploy/apigee/README.md` has the
-    REST commands, the eval org steps and the K2.3/K3 checklist. `deploy/` is not in the image.
-  - Rules: no hosts, URLs or secrets in the bundles (the target is the TargetServer `consent-api`; the key comes from
-    the KVM `consent-backend` into `private.backend_api_key`). The token response is built by `AM-TokenResponse`
-    (`GenerateResponse` disabled). `grant_type` is checked with `RaiseFault` before `OAuthV2`. ProxyEndpoint
-    FaultRules are evaluated bottom-up. The product has `/**`, and the proxy returns 404 for other routes.
-  - `scripts/package_apigee.py` builds reproducible zips into `deploy/apigee/dist/` (gitignored).
-  - `scripts/export_openapi.py --kizuna --server https://<API_HOST> <out>` exports only the `kizuna` tag, with an
-    OAuth2 `clientCredentials` scheme and pruned schemas. The default export (BackOffice snapshot) is unchanged.
-  - Postman: folder "KIZUNA vía Apigee (OAuth 2.0)" (token request + Bearer; variables `apigee_*`).
-  - Tests: `tests/test_apigee_bundles.py` (XML, Annex A texts, zip, Postman) and `tests/test_kizuna_openapi_export.py`.
+## KIZUNA inbound with Cloud Run IAM (`../requerimientos/INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md`, phase I1)
+
+- Same image, two Cloud Run services: `consent-api` (public: landing, Twilio webhook, BackOffice) and
+  `consent-api-kizuna` (private: only KIZUNA; `roles/run.invoker` only for `kizuna-caller`). Cloud Run validates the
+  Google ID token before the app; the app never sees the API Key in Production (no `API_KEY` secret there).
+- `API_SURFACE` (`all` default / `public` / `kizuna`): `app/api/surface.py::routers_for` / `include_routers` (called in
+  `app/main.py`). `/health` is always mounted. Unmounted routes are 404.
+- `KIZUNA_INBOUND_AUTH` (`api_key` default / `cloud_run_iam`): `app/core/security.py::authenticated_by_cloud_run` makes
+  `require_api_key` skip **only** when it is `cloud_run_iam` **and** `API_SURFACE=kizuna`. `check_security_settings`:
+  `cloud_run_iam` outside the `kizuna` surface raises `InsecureConfigurationError`; with it, an INFO reminder; on the
+  `public` surface the API Key is not checked. `API_KEY_ENABLED: "true"` stays in the YAML as a fail-safe.
+- `scripts/kizuna_env.py` generates `deploy/cloudrun-kizuna.env.yaml` (gitignored) from `deploy/cloudrun.env.yaml`,
+  changing only `API_SURFACE`/`KIZUNA_INBOUND_AUTH` (`--env-vars-file` can't be combined with `--update-env-vars`).
+- `scripts/export_openapi.py --kizuna --server https://<URL_CONSENT_API_KIZUNA> <out>`: only the `kizuna` tag, `http`
+  bearer scheme `GoogleIdToken`, Cloud Run 401/403. The default export (BackOffice snapshot) is unchanged.
+- Postman: folder "KIZUNA vía Cloud Run IAM" (`{{kizuna_api_url}}`, Bearer `{{kizuna_id_token}}`; the token is got
+  outside Postman with `gcloud auth print-identity-token --impersonate-service-account=... --audiences=...`).
+- FastAPI 0.162 keeps included routers as `_IncludedRouter` in `app.routes` (not flattened): list effective paths with
+  `app.openapi()["paths"]`.
+- Tests: `tests/test_kizuna_cloud_run_iam.py` (surfaces, startup checks incl. subprocess imports of `app.main`, the
+  private service against the test DB without `X-API-Key`, env generation, Postman, no Apigee left) and
+  `tests/test_kizuna_openapi_export.py`.
 
 ## Postman and the frontend OpenAPI snapshot
 

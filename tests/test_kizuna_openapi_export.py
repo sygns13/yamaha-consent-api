@@ -1,4 +1,7 @@
-"""K2, tarea 6: OpenAPI que se entrega a KIZUNA (solo sus endpoints, con OAuth 2.0 de Apigee)."""
+"""OpenAPI que se entrega a KIZUNA: solo sus endpoints, con el Bearer de Cloud Run IAM.
+
+INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md, sección 4.5 (criterio I1.7).
+"""
 
 import json
 from pathlib import Path
@@ -7,7 +10,7 @@ import pytest
 
 from scripts.export_openapi import kizuna_openapi_document, main, openapi_document
 
-SERVER = "https://api.ejemplo.test"
+SERVER = "https://consent-api-kizuna-ejemplo.a.run.app"
 
 
 def test_only_the_kizuna_operations_are_exported() -> None:
@@ -21,27 +24,30 @@ def test_only_the_kizuna_operations_are_exported() -> None:
     assert all("kizuna" in op["tags"] for ops in document["paths"].values() for op in ops.values())
 
 
-def test_oauth2_client_credentials_replaces_the_api_key() -> None:
+def test_google_id_token_bearer_replaces_the_api_key() -> None:
     document = kizuna_openapi_document(f"{SERVER}/")
-    assert document["servers"] == [{"url": SERVER, "description": "Apigee (Producción)"}]
+    assert document["servers"] == [
+        {"url": SERVER, "description": "Cloud Run consent-api-kizuna (Producción)"}
+    ]
     schemes = document["components"]["securitySchemes"]
-    assert list(schemes) == ["OAuth2"]
-    flow = schemes["OAuth2"]["flows"]["clientCredentials"]
-    assert flow["tokenUrl"] == f"{SERVER}/oauth2/token"
-    assert list(flow["scopes"]) == ["kizuna.consents"]
+    assert schemes == {
+        "GoogleIdToken": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": schemes["GoogleIdToken"]["description"],
+        }
+    }
     for ops in document["paths"].values():
         for operation in ops.values():
-            assert operation["security"] == [{"OAuth2": ["kizuna.consents"]}]
+            assert operation["security"] == [{"GoogleIdToken": []}]
             assert {"401", "403"} <= set(operation["responses"])
-    assert "ApiKey" not in json.dumps(document)
-    assert "X-API-Key" not in json.dumps(document)
-
-
-def test_token_url_can_be_given_explicitly() -> None:
-    document = kizuna_openapi_document(SERVER, "https://token.ejemplo.test/oauth2/token")
-    assert document["components"]["securitySchemes"]["OAuth2"]["flows"]["clientCredentials"]["tokenUrl"] == (
-        "https://token.ejemplo.test/oauth2/token"
-    )
+    description = document["info"]["description"]
+    assert f"`{SERVER}`" in description
+    assert "https://oauth2.googleapis.com/token" in description
+    dumped = json.dumps(document)
+    for forbidden in ("ApiKey", "X-API-Key", "Apigee", "apigee", "clientCredentials"):
+        assert forbidden not in dumped
 
 
 def test_only_referenced_schemas_are_kept() -> None:
@@ -70,3 +76,11 @@ def test_cli_writes_the_kizuna_document(
     assert text.endswith("}\n") and "\r\n" not in text
     assert json.loads(text)["servers"][0]["url"] == SERVER
     assert "OpenAPI exportado" in capsys.readouterr().out
+
+
+def test_cli_rejects_the_removed_token_url_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "sys.argv", ["export_openapi", "--kizuna", "--token-url", "x", str(tmp_path / "o.json")]
+    )
+    with pytest.raises(SystemExit):
+        main()

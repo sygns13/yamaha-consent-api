@@ -6,11 +6,12 @@ Solo desarrollo (como el resto de `scripts/`, no va en la imagen). Lo usa el fro
 
     uv run python -m scripts.export_openapi ../yamaha-consent-backoffice/docs/openapi.json
 
-Con `--kizuna` exporta el contrato que se entrega a KIZUNA (INTEGRACION_KIZUNA_OAUTH2.spec.md, K2 tarea 6): solo los
-endpoints del tag `kizuna`, con el host de Apigee en `servers` y OAuth 2.0 client credentials en lugar de la API Key
-(que KIZUNA ya no usa: la pone Apigee). Sin argumentos usa marcadores; con el dominio real:
+Con `--kizuna` exporta el contrato que se entrega a KIZUNA (INTEGRACION_KIZUNA_CLOUD_RUN_IAM.spec.md, sección 4.5):
+solo los endpoints del tag `kizuna`, con la URL del servicio privado `consent-api-kizuna` en `servers` y un Bearer
+(ID token de Google de la cuenta de servicio de KIZUNA) en lugar de la API Key. Sin argumentos usa un marcador; con la
+URL real:
 
-    uv run python -m scripts.export_openapi --kizuna --server https://<API_HOST> openapi-kizuna.json
+    uv run python -m scripts.export_openapi --kizuna --server https://<URL_CONSENT_API_KIZUNA> openapi-kizuna.json
 """
 
 import argparse
@@ -20,13 +21,12 @@ from pathlib import Path
 from typing import Any
 
 KIZUNA_TAG = "kizuna"
-KIZUNA_SCOPE = "kizuna.consents"
-DEFAULT_SERVER = "https://<API_HOST>"
-TOKEN_PATH = "/oauth2/token"
-OAUTH_SCHEME = "OAuth2"
-APIGEE_RESPONSES = {
-    "401": 'Falta el token de acceso, o es inválido o vencido (Apigee): `{"detail": "..."}`',
-    "403": "El token no tiene el scope `kizuna.consents` (Apigee)",
+DEFAULT_SERVER = "https://<URL_CONSENT_API_KIZUNA>"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+BEARER_SCHEME = "GoogleIdToken"
+CLOUD_RUN_RESPONSES = {
+    "401": "ID token inválido, vencido o con otra audiencia (Cloud Run; página de error de Google, no JSON)",
+    "403": "Sin ID token, o la identidad no tiene permiso para invocar el servicio (Cloud Run; no JSON)",
 }
 
 
@@ -36,38 +36,39 @@ def openapi_document() -> dict[str, Any]:
     return app.openapi()
 
 
-def kizuna_openapi_document(server: str = DEFAULT_SERVER, token_url: str | None = None) -> dict[str, Any]:
-    """Solo las operaciones del tag `kizuna`, con OAuth 2.0 client credentials y el host de Apigee."""
+def kizuna_openapi_document(server: str = DEFAULT_SERVER) -> dict[str, Any]:
+    """Solo las operaciones del tag `kizuna`, con el Bearer de Cloud Run IAM y la URL del servicio privado."""
     server = server.rstrip("/")
     document = copy.deepcopy(openapi_document())
     paths: dict[str, Any] = {}
     for path, operations in document["paths"].items():
         kept = {method: op for method, op in operations.items() if KIZUNA_TAG in op.get("tags", [])}
         for operation in kept.values():
-            operation["security"] = [{OAUTH_SCHEME: [KIZUNA_SCOPE]}]
-            for code, description in APIGEE_RESPONSES.items():
+            operation["security"] = [{BEARER_SCHEME: []}]
+            for code, description in CLOUD_RUN_RESPONSES.items():
                 operation["responses"].setdefault(code, {"description": description})
         if kept:
             paths[path] = kept
 
     document["paths"] = paths
-    document["servers"] = [{"url": server, "description": "Apigee (Producción)"}]
+    document["servers"] = [{"url": server, "description": "Cloud Run consent-api-kizuna (Producción)"}]
     document["info"]["title"] = "Yamaha Consent API — KIZUNA"
     document["info"]["description"] = (
-        f"Endpoints para KIZUNA vía Apigee. Token: `POST {token_url or server + TOKEN_PATH}` con "
-        "`grant_type=client_credentials`, `client_id`, `client_secret` y `scope=kizuna.consents` (en el cuerpo "
-        "form-urlencoded o con Basic); se envía como `Authorization: Bearer <token>`. Vigencia: 3600 s."
+        "Endpoints para KIZUNA en el servicio privado de Cloud Run. Autenticación: `Authorization: Bearer <ID token>`, "
+        "un ID token de Google de la cuenta de servicio entregada a KIZUNA, con audiencia (`target_audience`) = "
+        f"`{server}`. Se obtiene firmando un JWT con la clave de la cuenta de servicio y canjeándolo en "
+        f"`POST {GOOGLE_TOKEN_URL}` (`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`); las librerías de "
+        "Google lo hacen solas. Vigencia: 3600 s. Cloud Run valida el token antes de que la petición llegue a la API."
     )
     document["components"]["securitySchemes"] = {
-        OAUTH_SCHEME: {
-            "type": "oauth2",
-            "description": "OAuth 2.0 client credentials emitido por Apigee",
-            "flows": {
-                "clientCredentials": {
-                    "tokenUrl": token_url or f"{server}{TOKEN_PATH}",
-                    "scopes": {KIZUNA_SCOPE: "Registrar y consultar consentimientos"},
-                }
-            },
+        BEARER_SCHEME: {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": (
+                "ID token de Google de la cuenta de servicio de KIZUNA (`aud` = la URL del servidor). Lo valida "
+                "Cloud Run IAM."
+            ),
         }
     }
     _keep_referenced_schemas(document)
@@ -110,15 +111,14 @@ def main() -> None:
         "output", type=Path, help="Ruta del archivo (p. ej. ../yamaha-consent-backoffice/docs/openapi.json)"
     )
     parser.add_argument(
-        "--kizuna", action="store_true", help="Solo los endpoints de KIZUNA, con OAuth 2.0 de Apigee"
+        "--kizuna", action="store_true", help="Solo los endpoints de KIZUNA, con el Bearer de Cloud Run IAM"
     )
-    parser.add_argument("--server", default=DEFAULT_SERVER, help="URL base de Apigee (con --kizuna)")
     parser.add_argument(
-        "--token-url", default=None, help="Token URL (con --kizuna; por defecto <server>/oauth2/token)"
+        "--server", default=DEFAULT_SERVER, help="URL del servicio consent-api-kizuna (con --kizuna)"
     )
     args = parser.parse_args()
     if args.kizuna:
-        write_json(args.output, kizuna_openapi_document(args.server, args.token_url))
+        write_json(args.output, kizuna_openapi_document(args.server))
     else:
         write_openapi(args.output)
     print(f"OpenAPI exportado en {args.output}")
